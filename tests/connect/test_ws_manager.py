@@ -509,7 +509,7 @@ async def _send_report(manager: WsManager) -> bool:
 class TestSessionOwnership:
     @pytest.mark.parametrize(
         ("backend_type", "fixed_volume", "expected"),
-        [("dlna", True, 1), ("dlna", False, 2), ("local", True, 2)],
+        [("dlna", True, 1), ("dlna", False, 2), ("local", True, 2), ("alsa", False, 1)],
     )
     async def test_join_volume_capability(
         self, config, valid_tokens, backend_type, fixed_volume, expected

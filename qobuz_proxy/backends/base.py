@@ -6,7 +6,7 @@ Defines the contract that all audio backends must implement.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from .types import (
     BackendInfo,
@@ -25,6 +25,7 @@ TrackEndedCallback = Callable[[], None]
 PlaybackErrorCallback = Callable[[str], None]  # error_message
 NextTrackStartedCallback = Callable[[], None]
 PlaybackInterruptedCallback = Callable[[int], None]  # last position_ms
+StreamingURLResolver = Callable[[str, bool], Awaitable[Optional[str]]]
 
 
 class AudioBackend(ABC):
@@ -56,6 +57,7 @@ class AudioBackend(ABC):
         self._on_playback_error: Optional[PlaybackErrorCallback] = None
         self._on_next_track_started: Optional[NextTrackStartedCallback] = None
         self._on_playback_interrupted: Optional[PlaybackInterruptedCallback] = None
+        self._streaming_url_resolver: Optional[StreamingURLResolver] = None
 
     # =========================================================================
     # Playback Control - Required
@@ -65,6 +67,27 @@ class AudioBackend(ABC):
     async def play(self, url: str, metadata: BackendTrackMetadata) -> None:
         """Start playback of a track."""
         pass
+
+    async def play_from(
+        self, url: str, metadata: BackendTrackMetadata, position_ms: int = 0
+    ) -> None:
+        """Start playback at a position, preserving compatibility for existing backends."""
+        await self.play(url, metadata)
+        if position_ms > 0:
+            await self.seek(position_ms)
+
+    def set_streaming_url_resolver(self, resolver: Optional[StreamingURLResolver]) -> None:
+        """Install an optional callback for backends that must reopen signed URLs."""
+        self._streaming_url_resolver = resolver
+
+    async def _resolve_streaming_url(self, track_id: str, *, force: bool = False) -> str:
+        """Resolve a current signed URL without coupling a backend to Qobuz APIs."""
+        if self._streaming_url_resolver is None:
+            raise RuntimeError("No streaming URL resolver is configured")
+        url = await self._streaming_url_resolver(track_id, force)
+        if not url:
+            raise RuntimeError(f"Unable to refresh streaming URL for track {track_id}")
+        return url
 
     @abstractmethod
     async def pause(self) -> None:

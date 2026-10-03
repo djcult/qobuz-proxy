@@ -86,6 +86,11 @@ class BackendFactory:
                 device=config.backend.local.device,
                 buffer_size=config.backend.local.buffer_size,
             )
+        elif backend_type == "alsa":
+            return await cls.create_alsa(
+                device=config.backend.alsa.device,
+                latency_us=config.backend.alsa.latency_us,
+            )
         else:
             # Generic instantiation for registered backends
             return backend_class(name=f"{backend_type} Backend")
@@ -172,6 +177,21 @@ class BackendFactory:
         raise BackendNotFoundError("Failed to initialize local audio backend")
 
     @classmethod
+    async def create_alsa(
+        cls,
+        device: str = "hw:0,0",
+        latency_us: int = 500_000,
+        name: Optional[str] = None,
+    ) -> AudioBackend:
+        """Create a direct ALSA hardware backend."""
+        from qobuz_proxy.backends.alsa import AlsaAudioBackend
+
+        backend = AlsaAudioBackend(device=device, latency_us=latency_us, name=name or "ALSA Audio")
+        if await backend.connect():
+            return backend
+        raise BackendNotFoundError(f"Failed to initialize ALSA device {device}")
+
+    @classmethod
     def list_available_backends(cls) -> list[str]:
         """List available backend types."""
         return BackendRegistry.available_types()
@@ -187,3 +207,10 @@ try:
     BackendRegistry.register("local", LocalAudioBackend)
 except ImportError:
     pass  # sounddevice not installed
+
+try:
+    from qobuz_proxy.backends.alsa import AlsaAudioBackend
+
+    BackendRegistry.register("alsa", AlsaAudioBackend)
+except (ImportError, OSError):
+    pass

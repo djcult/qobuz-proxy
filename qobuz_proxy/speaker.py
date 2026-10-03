@@ -15,6 +15,7 @@ from aiohttp import web
 from qobuz_proxy.config import (
     AUTO_FALLBACK_QUALITY,
     AUTO_QUALITY,
+    AlsaConfig,
     BackendConfig,
     Config,
     DeviceConfig,
@@ -136,10 +137,11 @@ class Speaker:
                 "album_art_url": meta.get("artwork_url", ""),
                 "quality": meta.get("quality_name", ""),
             }
-            # With fixed volume (a DLNA-only setting) the proxy never touches or
-            # tracks the renderer's level, so the cached value is just the
-            # initial default — omit it.
-            fixed_volume = self._config.backend_type == "dlna" and self._config.dlna_fixed_volume
+            # In fixed-volume mode the proxy never touches or tracks the
+            # renderer's level, so the cached value is not meaningful — omit it.
+            fixed_volume = self._config.backend_type == "alsa" or (
+                self._config.backend_type == "dlna" and self._config.dlna_fixed_volume
+            )
             if not fixed_volume:
                 now_playing["volume"] = self._player._volume
 
@@ -159,6 +161,9 @@ class Speaker:
         elif self._config.backend_type == "local":
             config_dict["audio_device"] = self._config.audio_device
             config_dict["buffer_size"] = self._config.audio_buffer_size
+        elif self._config.backend_type == "alsa":
+            config_dict["alsa_device"] = self._config.alsa_device
+            config_dict["fixed_volume"] = True
 
         return {
             "id": slugify_name(self._config.name),
@@ -198,6 +203,10 @@ class Speaker:
                 local=LocalConfig(
                     device=self._config.audio_device,
                     buffer_size=self._config.audio_buffer_size,
+                ),
+                alsa=AlsaConfig(
+                    device=self._config.alsa_device,
+                    latency_us=self._config.alsa_latency_us,
                 ),
             ),
             server=ServerConfig(
@@ -303,6 +312,8 @@ class Speaker:
                 self._player.set_fixed_volume_mode(self._config.dlna_fixed_volume)
                 self._player.set_playback_permission_check(backend.can_apply_remote_state)
                 backend.on_external_playback(self._on_external_playback)
+            elif self._config.backend_type == "alsa":
+                self._player.set_fixed_volume_mode(True)
 
             # 7. Create and start discovery service
             logger.debug(f"[{self.name}] Starting discovery service...")

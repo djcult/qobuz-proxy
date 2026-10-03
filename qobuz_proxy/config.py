@@ -56,6 +56,8 @@ ENV_MAPPINGS = {
     # Local audio
     "QOBUZPROXY_AUDIO_DEVICE": ("backend", "local", "device"),
     "QOBUZPROXY_AUDIO_BUFFER_SIZE": ("backend", "local", "buffer_size"),
+    "QOBUZPROXY_ALSA_DEVICE": ("backend", "alsa", "device"),
+    "QOBUZPROXY_ALSA_LATENCY_US": ("backend", "alsa", "latency_us"),
     # Server
     "QOBUZPROXY_HTTP_PORT": ("server", "http_port"),
     "QOBUZPROXY_PROXY_PORT": ("backend", "dlna", "proxy_port"),
@@ -112,12 +114,21 @@ class LocalConfig:
 
 
 @dataclass
+class AlsaConfig:
+    """Direct ALSA hardware backend configuration."""
+
+    device: str = "hw:0,0"
+    latency_us: int = 500_000
+
+
+@dataclass
 class BackendConfig:
     """Audio backend configuration."""
 
     type: str = "dlna"
     dlna: DLNAConfig = field(default_factory=DLNAConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
+    alsa: AlsaConfig = field(default_factory=AlsaConfig)
 
 
 @dataclass
@@ -152,6 +163,8 @@ class SpeakerConfig:
     proxy_port: int = 0  # 0 = auto-assign
     audio_device: str = "default"
     audio_buffer_size: int = 2048
+    alsa_device: str = "hw:0,0"
+    alsa_latency_us: int = 500_000
 
 
 @dataclass
@@ -211,6 +224,11 @@ def validate_config(config: Config) -> None:
                 f"Invalid buffer_size: {config.backend.local.buffer_size}. "
                 f"Must be between 64 and 16384"
             )
+    elif config.backend.type == "alsa":
+        if not config.backend.alsa.device.startswith("hw:"):
+            errors.append("ALSA device must be an explicit hw: device")
+        if not 10_000 <= config.backend.alsa.latency_us <= 5_000_000:
+            errors.append("ALSA latency_us must be between 10000 and 5000000")
     elif config.backend.type != "stub":
         errors.append(f"Unknown backend type: {config.backend.type}")
 
@@ -261,6 +279,9 @@ def speaker_config_to_dict(sc: SpeakerConfig) -> dict:
     elif sc.backend_type == "local":
         d["audio_device"] = sc.audio_device
         d["audio_buffer_size"] = sc.audio_buffer_size
+    elif sc.backend_type == "alsa":
+        d["alsa_device"] = sc.alsa_device
+        d["alsa_latency_us"] = sc.alsa_latency_us
     return d
 
 
@@ -280,6 +301,8 @@ def _single_speaker_from_config(config: Config) -> SpeakerConfig:
         proxy_port=config.backend.dlna.proxy_port,
         audio_device=config.backend.local.device,
         audio_buffer_size=config.backend.local.buffer_size,
+        alsa_device=config.backend.alsa.device,
+        alsa_latency_us=config.backend.alsa.latency_us,
     )
 
 
@@ -350,8 +373,12 @@ def _validate_speakers(speakers: list[SpeakerConfig]) -> None:
     for s in speakers:
         if s.backend_type == "dlna" and not s.dlna_ip:
             errors.append(f"Speaker '{s.name}': DLNA IP address is required")
-        if s.backend_type not in ("dlna", "local", "stub"):
+        if s.backend_type not in ("dlna", "local", "alsa", "stub"):
             errors.append(f"Speaker '{s.name}': unknown backend type '{s.backend_type}'")
+        if s.backend_type == "alsa" and not s.alsa_device.startswith("hw:"):
+            errors.append(f"Speaker '{s.name}': ALSA device must be an explicit hw: device")
+        if s.backend_type == "alsa" and not 10_000 <= s.alsa_latency_us <= 5_000_000:
+            errors.append(f"Speaker '{s.name}': invalid ALSA latency {s.alsa_latency_us}")
         if s.http_port and not validate_port(s.http_port):
             errors.append(f"Speaker '{s.name}': invalid HTTP port {s.http_port}")
         if s.proxy_port and not validate_port(s.proxy_port):
@@ -385,6 +412,8 @@ def _parse_yaml_speakers(raw_speakers: list[dict], config: Config) -> list[Speak
             proxy_port=int(raw.get("proxy_port", 0)),
             audio_device=raw.get("audio_device", "default"),
             audio_buffer_size=int(raw.get("audio_buffer_size", 2048)),
+            alsa_device=raw.get("alsa_device", "hw:0,0"),
+            alsa_latency_us=int(raw.get("alsa_latency_us", 500_000)),
         )
         speakers.append(speaker)
     return speakers
@@ -431,6 +460,8 @@ def _parse_env_speakers(config: Config) -> list[SpeakerConfig]:
     proxy_ports_raw = _split_env_padded("QOBUZPROXY_PROXY_PORT", count, "0")
     audio_devices = _split_env_padded("QOBUZPROXY_AUDIO_DEVICE", count, "default")
     audio_buffer_sizes_raw = _split_env_padded("QOBUZPROXY_AUDIO_BUFFER_SIZE", count, "2048")
+    alsa_devices = _split_env_padded("QOBUZPROXY_ALSA_DEVICE", count, "hw:0,0")
+    alsa_latencies_raw = _split_env_padded("QOBUZPROXY_ALSA_LATENCY_US", count, "500000")
     qualities_raw = _split_env_padded("QOBUZ_MAX_QUALITY", count, "27")
 
     speakers = []
@@ -447,6 +478,8 @@ def _parse_env_speakers(config: Config) -> list[SpeakerConfig]:
             proxy_port=int(proxy_ports_raw[i]),
             audio_device=audio_devices[i],
             audio_buffer_size=int(audio_buffer_sizes_raw[i]),
+            alsa_device=alsa_devices[i],
+            alsa_latency_us=int(alsa_latencies_raw[i]),
         )
         speakers.append(speaker)
 
@@ -472,7 +505,7 @@ def build_speaker_configs(
             speakers = env_speakers
         else:
             # Only create a speaker from flat config if a backend is actually configured
-            has_backend = config.backend.dlna.ip or config.backend.type == "local"
+            has_backend = config.backend.dlna.ip or config.backend.type in ("local", "alsa")
             if has_backend:
                 speakers = [_single_speaker_from_config(config)]
 
@@ -545,6 +578,7 @@ def load_env_config() -> dict:
                 "QOBUZPROXY_HTTP_PORT",
                 "QOBUZPROXY_PROXY_PORT",
                 "QOBUZPROXY_AUDIO_BUFFER_SIZE",
+                "QOBUZPROXY_ALSA_LATENCY_US",
             ):
                 try:
                     value = int(value)
@@ -634,6 +668,12 @@ def dict_to_config(d: dict) -> Config:
             config.backend.local.device = local.get("device", config.backend.local.device)
             config.backend.local.buffer_size = local.get(
                 "buffer_size", config.backend.local.buffer_size
+            )
+        if "alsa" in b:
+            alsa = b["alsa"]
+            config.backend.alsa.device = alsa.get("device", config.backend.alsa.device)
+            config.backend.alsa.latency_us = int(
+                alsa.get("latency_us", config.backend.alsa.latency_us)
             )
 
     # Server

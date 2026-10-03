@@ -109,6 +109,20 @@ class TestSpeakerConstruction:
         assert comp.backend.local.device == "hw:1"
         assert comp.backend.local.buffer_size == 4096
 
+    def test_build_component_config_maps_backend_alsa(self):
+        config = _make_speaker_config(
+            backend_type="alsa",
+            alsa_device="hw:Audiolab,0",
+            alsa_latency_us=250000,
+        )
+        speaker = Speaker(config=config, api_client=_make_api_client(), app_id="id")
+
+        comp = speaker._build_component_config()
+
+        assert comp.backend.type == "alsa"
+        assert comp.backend.alsa.device == "hw:Audiolab,0"
+        assert comp.backend.alsa.latency_us == 250000
+
     def test_build_component_config_maps_server(self):
         config = _make_speaker_config(http_port=9000, bind_address="192.168.1.5")
         speaker = Speaker(config=config, api_client=_make_api_client(), app_id="id")

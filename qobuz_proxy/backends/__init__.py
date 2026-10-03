@@ -12,6 +12,7 @@ from .base import (
     PositionUpdateCallback,
     StateChangeCallback,
     TrackEndedCallback,
+    StreamingURLResolver,
 )
 from .factory import (
     BackendFactory,
@@ -40,6 +41,11 @@ try:
 except ImportError:
     pass  # sounddevice/numpy not installed
 
+try:
+    from .alsa import AlsaAudioBackend
+except (ImportError, OSError):
+    pass
+
 __all__ = [
     # Types
     "BackendInfo",
@@ -55,6 +61,7 @@ __all__ = [
     "PositionUpdateCallback",
     "StateChangeCallback",
     "TrackEndedCallback",
+    "StreamingURLResolver",
     # Factory
     "BackendFactory",
     "BackendNotFoundError",
@@ -71,4 +78,5 @@ __all__ = [
     "MetadataServiceURLProvider",
     # Local backend
     "LocalAudioBackend",
+    "AlsaAudioBackend",
 ]

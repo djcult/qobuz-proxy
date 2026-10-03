@@ -194,12 +194,20 @@ Environment Variables:
         help="Audio buffer size in frames (default: 2048)",
     )
 
+    alsa_group = parser.add_argument_group("ALSA Backend")
+    alsa_group.add_argument(
+        "--alsa-device", metavar="HW", help="Exact ALSA hardware PCM, for example hw:CARD,0"
+    )
+    alsa_group.add_argument(
+        "--alsa-latency-us", type=int, metavar="INT", help="ALSA target latency in microseconds"
+    )
+
     # Backend type
     parser.add_argument(
         "--backend-type",
-        choices=["dlna", "local"],
+        choices=["dlna", "local", "alsa"],
         metavar="TYPE",
-        help="Audio backend type: dlna or local",
+        help="Audio backend type: dlna, local, or alsa",
     )
 
     # Server
@@ -258,6 +266,8 @@ def args_to_dict(args: argparse.Namespace) -> dict:
         "fixed_volume": ("backend", "dlna", "fixed_volume"),
         "audio_device": ("backend", "local", "device"),
         "audio_buffer_size": ("backend", "local", "buffer_size"),
+        "alsa_device": ("backend", "alsa", "device"),
+        "alsa_latency_us": ("backend", "alsa", "latency_us"),
         "backend_type": ("backend", "type"),
         "http_port": ("server", "http_port"),
         "proxy_port": ("backend", "dlna", "proxy_port"),
@@ -290,6 +300,9 @@ def log_config(config: Config) -> None:
         elif sc.backend_type == "local":
             logger.info(f"  Audio device: {sc.audio_device}")
             logger.info(f"  Buffer size: {sc.audio_buffer_size} frames")
+        elif sc.backend_type == "alsa":
+            logger.info(f"  ALSA hardware device: {sc.alsa_device}")
+            logger.info("  Volume control: disabled (bit-perfect fixed volume)")
         logger.info(f"  HTTP server: {sc.bind_address}:{sc.http_port}")
         logger.info(f"  Max quality: {sc.max_quality}")
 

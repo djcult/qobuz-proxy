@@ -52,6 +52,10 @@ def _configured_speaker_status(sc: SpeakerConfig, status: str) -> dict:
     elif sc.backend_type == "local":
         config_dict["audio_device"] = sc.audio_device
         config_dict["buffer_size"] = sc.audio_buffer_size
+    elif sc.backend_type == "alsa":
+        config_dict["alsa_device"] = sc.alsa_device
+        config_dict["alsa_latency_us"] = sc.alsa_latency_us
+        config_dict["fixed_volume"] = True
     return {
         "id": slugify_name(sc.name),
         "name": sc.name,
@@ -424,6 +428,8 @@ class QobuzProxy:
             dlna_description_url=body.get("description_url", ""),
             audio_device=body.get("audio_device", "default"),
             audio_buffer_size=int(body.get("buffer_size", 2048)),
+            alsa_device=body.get("alsa_device", "hw:0,0"),
+            alsa_latency_us=int(body.get("alsa_latency_us", 500_000)),
         )
 
         assert self._api_client is not None
@@ -501,6 +507,8 @@ class QobuzProxy:
             proxy_port=old_config.proxy_port,
             audio_device=body.get("audio_device", old_config.audio_device),
             audio_buffer_size=int(body.get("buffer_size", old_config.audio_buffer_size)),
+            alsa_device=body.get("alsa_device", old_config.alsa_device),
+            alsa_latency_us=int(body.get("alsa_latency_us", old_config.alsa_latency_us)),
         )
 
         # Persist first: the edit is saved even if the restart below fails
