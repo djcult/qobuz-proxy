@@ -19,8 +19,8 @@ from tests.playback.test_player_serialization import _make_player
 
 def _set_state_msg(
     *,
-    track_id: int,
-    queue_item_id: int,
+    track_id: int | None = None,
+    queue_item_id: int | None = None,
     playing_state: int | None = 2,
     position_ms: int | None = None,
     context_uuid: bytes | None = None,
@@ -33,10 +33,11 @@ def _set_state_msg(
         st.playingState = playing_state
     if position_ms is not None:
         st.currentPosition = position_ms
-    st.currentQueueItem.queueItemId = queue_item_id
-    st.currentQueueItem.trackId = track_id
-    if context_uuid is not None:
-        st.currentQueueItem.contextUuid = context_uuid
+    if track_id is not None:
+        st.currentQueueItem.queueItemId = queue_item_id or 0
+        st.currentQueueItem.trackId = track_id
+        if context_uuid is not None:
+            st.currentQueueItem.contextUuid = context_uuid
     return msg
 
 
@@ -140,6 +141,242 @@ class TestSetStateHandling:
         assert player.current_track is not None
         assert player.current_track.track_id == "1002"
         assert backend.played[-1] == "1002"
+
+    async def test_fragmented_set_state_augments_slow_track_load(self) -> None:
+        """A track, PLAYING, position, PLAYING burst is one desired state.
+
+        Fragments received during URL lookup must not cancel the target load.
+        """
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_url(track_id: str) -> str:
+            url_started.set()
+            await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_url
+
+        track = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(
+                    track_id=334040446,
+                    queue_item_id=17,
+                    playing_state=None,
+                )
+            )
+        )
+        await url_started.wait()
+        load_generation = player._command_generation
+        fragments = [
+            asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2))),
+            asyncio.create_task(
+                handler._handle_set_state(_set_state_msg(playing_state=None, position_ms=0))
+            ),
+            asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2))),
+        ]
+        await asyncio.sleep(0)
+        assert player._command_generation == load_generation
+        release_url.set()
+        await asyncio.gather(track, *fragments)
+
+        assert backend.played == ["334040446"]
+        assert player.current_track is not None
+        assert player.current_track.track_id == "334040446"
+        assert player.state == PlaybackState.PLAYING
+
+    async def test_fragmented_stop_supersedes_slow_track_load(self) -> None:
+        """A STOPPED fragment remains a cancellation boundary during loading."""
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_url(track_id: str) -> str:
+            url_started.set()
+            await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_url
+        track = asyncio.create_task(
+            handler._handle_set_state(_set_state_msg(track_id=7, queue_item_id=1, position_ms=0))
+        )
+        await url_started.wait()
+        stop = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=1)))
+        await asyncio.sleep(0)
+        release_url.set()
+        await asyncio.gather(track, stop)
+
+        assert backend.played == []
+        assert player.state == PlaybackState.STOPPED
+
+    async def test_playing_intent_carries_to_new_target(self) -> None:
+        """A new target inherits PLAYING when no replacement transport arrives."""
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_first_url(track_id: str) -> str:
+            if track_id == "136138993":
+                url_started.set()
+                await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_first_url
+        first = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=136138993, queue_item_id=1, playing_state=None)
+            )
+        )
+        await url_started.wait()
+        playing = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2)))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=136138995, queue_item_id=2, playing_state=None)
+            )
+        )
+        await asyncio.sleep(0)
+        release_url.set()
+        await asyncio.gather(first, playing, second)
+
+        assert backend.played == ["136138995"]
+        assert player.current_track is not None
+        assert player.current_track.track_id == "136138995"
+        assert player.current_track.queue_item_id == 2
+        assert player.current_position_ms == 0
+        assert player.state == PlaybackState.PLAYING
+
+    async def test_playing_carries_to_different_occurrence_of_same_track(self) -> None:
+        """A repeated track is a new target but keeps renderer transport intent."""
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_url(track_id: str) -> str:
+            url_started.set()
+            await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_url
+        first = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(
+                    track_id=42,
+                    queue_item_id=1,
+                    playing_state=None,
+                    position_ms=45_000,
+                )
+            )
+        )
+        await url_started.wait()
+        playing = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2)))
+        await asyncio.sleep(0)
+        repeated = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=42, queue_item_id=2, playing_state=None)
+            )
+        )
+        await asyncio.sleep(0)
+        release_url.set()
+        await asyncio.gather(first, playing, repeated)
+
+        assert backend.played == ["42"]
+        assert player.current_track is not None
+        assert player.current_track.track_id == "42"
+        assert player.current_track.queue_item_id == 2
+        assert player.current_position_ms == 0
+        assert player.state == PlaybackState.PLAYING
+
+    async def test_pause_overrides_playing_carried_to_new_target(self) -> None:
+        """A PAUSED fragment cancels inherited PLAYING before the new load starts."""
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_first_url(track_id: str) -> str:
+            if track_id == "1":
+                url_started.set()
+                await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_first_url
+        first = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=1, queue_item_id=1, playing_state=None)
+            )
+        )
+        await url_started.wait()
+        playing = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2)))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=2, queue_item_id=2, playing_state=None)
+            )
+        )
+        await asyncio.sleep(0)
+        paused = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=3)))
+        await asyncio.sleep(0)
+        release_url.set()
+        await asyncio.gather(first, playing, second, paused)
+
+        assert backend.played == []
+        assert player.current_track is not None
+        assert player.current_track.track_id == "2"
+        assert player._desired_remote_state is not None
+        assert player._desired_remote_state.playing_state == 3
+        assert player.state != PlaybackState.PLAYING
+
+    async def test_stop_overrides_playing_carried_to_new_target(self) -> None:
+        """A STOPPED fragment cancels inherited PLAYING before the new load starts."""
+        player, backend = _make_player()
+        handler = PlaybackCommandHandler(player)
+        await handler._handle_set_active(_set_active_msg(True))
+        url_started = asyncio.Event()
+        release_url = asyncio.Event()
+
+        async def slow_first_url(track_id: str) -> str:
+            if track_id == "1":
+                url_started.set()
+                await release_url.wait()
+            return f"http://test/{track_id}"
+
+        player.metadata.get_streaming_url.side_effect = slow_first_url
+        first = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=1, queue_item_id=1, playing_state=None)
+            )
+        )
+        await url_started.wait()
+        playing = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=2)))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            handler._handle_set_state(
+                _set_state_msg(track_id=2, queue_item_id=2, playing_state=None)
+            )
+        )
+        await asyncio.sleep(0)
+        stopped = asyncio.create_task(handler._handle_set_state(_set_state_msg(playing_state=1)))
+        await asyncio.sleep(0)
+        release_url.set()
+        await asyncio.gather(first, playing, second, stopped)
+
+        assert backend.played == []
+        assert player.current_track is not None
+        assert player.current_track.track_id == "2"
+        assert player._desired_remote_state is not None
+        assert player._desired_remote_state.playing_state == 1
+        assert player.state == PlaybackState.STOPPED
 
 
 class TestNextTrackSentinel:

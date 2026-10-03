@@ -5,6 +5,7 @@ Core playback controller that orchestrates queue, metadata, and audio backend.
 """
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import time
 from typing import Awaitable, Callable, Optional, TYPE_CHECKING
@@ -52,6 +53,18 @@ _STALE_SNAPSHOT_THRESHOLD_MS = 5000
 # If it never acknowledges the NEXT action, stop rather than wait forever.
 _UNAVAILABLE_SKIP_TIMEOUT_S = 10.0
 _MAX_UNAVAILABLE_SKIPS = 20
+
+
+@dataclass
+class _DesiredRemoteState:
+    """The desired renderer state assembled from partial SET_STATE messages."""
+
+    generation: int
+    track_id: Optional[str] = None
+    queue_item_id: Optional[int] = None
+    position_ms: Optional[int] = None
+    playing_state: Optional[int] = None
+    context_uuid: Optional[bytes] = None
 
 
 class QobuzPlayer:
@@ -110,6 +123,7 @@ class QobuzPlayer:
         # the lock (latest-command-wins).
         self._playback_lock = asyncio.Lock()
         self._command_generation = 0
+        self._desired_remote_state: Optional[_DesiredRemoteState] = None
         self._playback_permission_check: Optional[Callable[[], Awaitable[bool]]] = None
 
         # State reporting - supports both callback and StateReporter
@@ -460,15 +474,13 @@ class QobuzPlayer:
         playing_state: Optional[int],
         context_uuid: Optional[bytes] = None,
     ) -> None:
-        """Apply a full SET_STATE intent from the app atomically.
+        """Merge and apply a SET_STATE fragment atomically.
 
-        A SET_STATE is a multi-step intent (load this track, seek here, then
-        play/pause/stop). Each SET_STATE message is dispatched as its own task,
-        so if these steps were applied via separate locked methods they could
-        interleave — an older SET_STATE could play a stale track after a newer
-        one already queued a different load. Applying the whole sequence under a
-        single lock acquisition and a single generation check makes the newest
-        SET_STATE win as a unit, with no interleaving.
+        Qobuz may split one desired state across current-item, position, and
+        playing-state messages. Compatible fragments share a generation and
+        augment the desired snapshot, while a new target, STOP, or PAUSE
+        supersedes an in-flight load. The playback lock still prevents backend
+        operations from interleaving.
 
         Args:
             track_id: Target track id, or None if the message had no currentQueueItem.
@@ -486,6 +498,7 @@ class QobuzPlayer:
         # skip's pending play, leaving the renderer stopped (GitHub #33).
         if track_id is None and position_ms is None and playing_state is None:
             return
+        packet_track_id = track_id
         # A replay of the failed current item is not a new playback intent.
         # In particular it must not invalidate a NEXT waiting for the send lock.
         pending = self._skip_pending_track
@@ -502,7 +515,60 @@ class QobuzPlayer:
             )
         ):
             return
-        gen = self._next_generation()
+        desired = self._desired_remote_state
+        target_changed = track_id is not None and (
+            desired is None
+            or desired.track_id != track_id
+            or (
+                queue_item_id not in (None, 0)
+                and desired.queue_item_id not in (None, 0, queue_item_id)
+            )
+        )
+        # Transport intent belongs to the renderer, not to one track. Qobuz can
+        # therefore send target A, PLAYING, target B without repeating PLAYING
+        # for B. Carry only a still-current remote intent across navigation;
+        # position and context remain target-specific and are reset below.
+        carried_playing_state = (
+            desired.playing_state
+            if target_changed
+            and desired is not None
+            and desired.generation == self._command_generation
+            else None
+        )
+        # STOP and PAUSE are cancellation boundaries: unlike PLAYING and
+        # position fragments, they must prevent an in-flight load from starting.
+        supersedes = target_changed or playing_state in (1, 3)
+        if desired is None or desired.generation != self._command_generation or supersedes:
+            gen = self._next_generation()
+            if target_changed:
+                desired = _DesiredRemoteState(
+                    generation=gen,
+                    playing_state=carried_playing_state,
+                )
+            elif desired is None or desired.generation != gen - 1:
+                cur = self._current_track
+                desired = _DesiredRemoteState(
+                    generation=gen,
+                    track_id=cur.track_id if cur else None,
+                    queue_item_id=cur.queue_item_id if cur else None,
+                    context_uuid=cur.context_uuid if cur else None,
+                )
+            else:
+                desired.generation = gen
+        else:
+            gen = desired.generation
+
+        if track_id is not None:
+            desired.track_id = track_id
+            desired.queue_item_id = queue_item_id
+            if context_uuid is not None:
+                desired.context_uuid = context_uuid
+        if position_ms is not None:
+            desired.position_ms = position_ms
+        if playing_state is not None:
+            desired.playing_state = playing_state
+        self._desired_remote_state = desired
+
         async with self._playback_lock:
             if gen != self._command_generation:
                 logger.debug("SET_STATE superseded by newer command; skipping")
@@ -512,6 +578,15 @@ class QobuzPlayer:
                 return
             if gen != self._command_generation:
                 return
+
+            desired = self._desired_remote_state
+            if desired is None or desired.generation != gen:
+                return
+            track_id = desired.track_id
+            queue_item_id = desired.queue_item_id
+            position_ms = desired.position_ms
+            playing_state = desired.playing_state
+            context_uuid = desired.context_uuid
 
             # Detect a stale session-restore snapshot (server replays an old
             # PAUSED position after a reconnect while we're still playing). Done
@@ -543,7 +618,7 @@ class QobuzPlayer:
                 await self._send_state_update()
                 return
 
-            if self._skip_pending_track is not None and track_id is None:
+            if self._skip_pending_track is not None and packet_track_id is None:
                 logger.debug("Ignoring SET_STATE without a queue item while skipping a track")
                 return
 
@@ -581,12 +656,39 @@ class QobuzPlayer:
                         and (queue_item_id is None or cur.queue_item_id == queue_item_id)
                     ):
                         load_context = cur.context_uuid
-                    if not await self._load_track_locked(
+                    loaded = await self._load_track_locked(
                         queue_item_id or 0,
                         track_id,
                         load_context,
                         for_playback=playing_state == 2,
+                    )
+                    desired = self._desired_remote_state
+                    if (
+                        gen != self._command_generation
+                        or desired is None
+                        or desired.generation != gen
+                        or desired.track_id != track_id
                     ):
+                        logger.info(
+                            f"SET_STATE superseded while loading track {track_id}; "
+                            "not starting playback"
+                        )
+                        if self._state == PlaybackState.LOADING:
+                            self._state = PlaybackState.STOPPED
+                        return
+
+                    # PLAYING and position fragments may have arrived while the
+                    # URL and metadata were being fetched. Apply their merged
+                    # values to the track that just finished loading.
+                    queue_item_id = desired.queue_item_id
+                    position_ms = desired.position_ms
+                    playing_state = desired.playing_state
+                    context_uuid = desired.context_uuid
+                    stale = self._is_stale_pause_snapshot_locked(
+                        track_id, position_ms, playing_state
+                    )
+
+                    if not loaded:
                         failed = self._current_track
                         if (
                             playing_state == 2
@@ -602,19 +704,6 @@ class QobuzPlayer:
                                 await self._begin_skip_wait_locked()
                             else:
                                 await self._skip_past_unplayable_locked()
-                        return
-                    if gen != self._command_generation:
-                        # A stop/next/other SET_STATE queued up while the URL
-                        # and metadata were fetched (e.g. the server deactivated
-                        # this renderer right after its join snapshot). Don't
-                        # push this track to the backend only for the queued
-                        # command to tear it down again.
-                        logger.info(
-                            f"SET_STATE superseded while loading track {track_id}; "
-                            "not starting playback"
-                        )
-                        if self._state == PlaybackState.LOADING:
-                            self._state = PlaybackState.STOPPED
                         return
                 elif (
                     not stale
