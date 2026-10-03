@@ -17,6 +17,16 @@ from .pcm import AlsaPcm, PcmDevice, PcmFormat
 logger = logging.getLogger(__name__)
 
 
+async def _pcm_call(function, *args):
+    """Run a blocking PCM call without abandoning its worker on cancellation."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await asyncio.shield(worker)
+        raise
+
+
 class Decoder(Protocol):
     def available(self) -> bool: ...
     async def decode(self, url: str, *, skip_ms: int, on_format, on_pcm): ...
@@ -61,6 +71,10 @@ class AlsaAudioBackend(AudioBackend):
         self._frames_submitted = 0
         self._last_delay: int | None = None
         self._paused_position_ms = 0
+        # The ALSA device is exclusive. This lock belongs here rather than in the
+        # player so every backend entry point observes the same close-before-open
+        # lifecycle, including direct callers and cancellation cleanup.
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def supports_gapless(self) -> bool:
@@ -94,11 +108,12 @@ class AlsaAudioBackend(AudioBackend):
     async def play_from(
         self, url: str, metadata: BackendTrackMetadata, position_ms: int = 0
     ) -> None:
-        await self._cancel_pipeline()
-        self._metadata = metadata
-        self._paused_position_ms = max(0, position_ms)
-        self._notify_state_change(PlaybackState.LOADING)
-        await self._start_pipeline(url, self._paused_position_ms)
+        async with self._lifecycle_lock:
+            await self._cancel_pipeline()
+            self._metadata = metadata
+            self._paused_position_ms = max(0, position_ms)
+            self._notify_state_change(PlaybackState.LOADING)
+            await self._start_pipeline(url, self._paused_position_ms)
 
     async def _start_pipeline(self, url: str, position_ms: int) -> None:
         self._generation += 1
@@ -116,14 +131,14 @@ class AlsaAudioBackend(AudioBackend):
                 raise RuntimeError(f"Unsupported source sample rate: {audio_format.sample_rate} Hz")
             self._format = audio_format
             self._start_frame = position_ms * audio_format.sample_rate // 1000
-            await asyncio.to_thread(pcm.open, audio_format)
+            await _pcm_call(pcm.open, audio_format)
 
         async def on_pcm(data: bytes) -> None:
-            if generation != self._generation or self._pcm is None:
+            if generation != self._generation or self._pcm is not pcm:
                 raise asyncio.CancelledError
-            frames = await asyncio.to_thread(self._pcm.write, data)
+            frames = await _pcm_call(pcm.write, data)
             self._frames_submitted += frames
-            delay = await asyncio.to_thread(self._pcm.delay_frames)
+            delay = await _pcm_call(pcm.delay_frames)
             if delay is not None:
                 self._last_delay = delay
             self._notify_position_update(self._position_ms())
@@ -163,7 +178,7 @@ class AlsaAudioBackend(AudioBackend):
                     )
                 if generation != self._generation or self._pcm is None:
                     return
-                await asyncio.to_thread(self._pcm.drain)
+                await _pcm_call(pcm.drain)
                 if generation != self._generation:
                     return
                 self._paused_position_ms = self._position_ms()
@@ -181,8 +196,8 @@ class AlsaAudioBackend(AudioBackend):
                     self._notify_state_change(PlaybackState.ERROR)
                     self._notify_playback_error(str(exc))
             finally:
-                if generation == self._generation and self._pcm is not None:
-                    await asyncio.to_thread(self._pcm.close)
+                if generation == self._generation and self._pcm is pcm:
+                    await _pcm_call(pcm.close)
 
         self._task = asyncio.create_task(run())
         try:
@@ -202,6 +217,17 @@ class AlsaAudioBackend(AudioBackend):
         return audible * 1000 // self._format.sample_rate
 
     async def _cancel_pipeline(self) -> None:
+        cleanup = asyncio.create_task(self._cancel_pipeline_impl())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            # Do not release the lifecycle lock while a native handle is still
+            # being dropped or closed. The caller remains cancelled once the
+            # complete cleanup transaction has finished.
+            await asyncio.shield(cleanup)
+            raise
+
+    async def _cancel_pipeline_impl(self) -> None:
         self._generation += 1
         decoder, pcm, task = self._decoder, self._pcm, self._task
         self._decoder = None
@@ -209,7 +235,7 @@ class AlsaAudioBackend(AudioBackend):
         self._task = None
         if pcm is not None:
             # drop() is specifically used to interrupt blocked write/drain calls.
-            await asyncio.to_thread(pcm.drop)
+            await _pcm_call(pcm.drop)
         if decoder is not None:
             await decoder.cancel()
         if task is not None and not task.done():
@@ -228,62 +254,67 @@ class AlsaAudioBackend(AudioBackend):
             except (DecoderError, OSError):
                 pass
         if pcm is not None:
-            await asyncio.to_thread(pcm.close)
+            await _pcm_call(pcm.close)
 
     async def pause(self) -> None:
-        if self._state != PlaybackState.PLAYING:
-            return
-        if self._pcm is not None:
-            delay = await asyncio.to_thread(self._pcm.delay_frames)
-            if delay is not None:
-                self._last_delay = delay
-        self._paused_position_ms = self._position_ms()
-        await self._cancel_pipeline()
-        self._notify_state_change(PlaybackState.PAUSED)
+        async with self._lifecycle_lock:
+            if self._state != PlaybackState.PLAYING:
+                return
+            if self._pcm is not None:
+                delay = await _pcm_call(self._pcm.delay_frames)
+                if delay is not None:
+                    self._last_delay = delay
+            self._paused_position_ms = self._position_ms()
+            await self._cancel_pipeline()
+            self._notify_state_change(PlaybackState.PAUSED)
 
     async def resume(self) -> bool:
-        if self._state != PlaybackState.PAUSED or self._metadata is None:
-            return False
-        try:
-            url = await self._resolve_streaming_url(self._metadata.track_id)
-            self._notify_state_change(PlaybackState.LOADING)
-            await self._start_pipeline(url, self._paused_position_ms)
-            self._notify_state_change(PlaybackState.PLAYING)
-            return True
-        except Exception as exc:
-            self._notify_state_change(PlaybackState.ERROR)
-            self._notify_playback_error(str(exc))
-            return False
+        async with self._lifecycle_lock:
+            if self._state != PlaybackState.PAUSED or self._metadata is None:
+                return False
+            try:
+                url = await self._resolve_streaming_url(self._metadata.track_id)
+                self._notify_state_change(PlaybackState.LOADING)
+                await self._start_pipeline(url, self._paused_position_ms)
+                self._notify_state_change(PlaybackState.PLAYING)
+                return True
+            except Exception as exc:
+                self._notify_state_change(PlaybackState.ERROR)
+                self._notify_playback_error(str(exc))
+                return False
 
     async def stop(self, *, next_track_id: Optional[str] = None) -> None:
-        await self._cancel_pipeline()
-        self._metadata = None
-        self._format = None
-        self._frames_submitted = 0
-        self._paused_position_ms = 0
-        self._notify_state_change(PlaybackState.STOPPED)
+        async with self._lifecycle_lock:
+            await self._cancel_pipeline()
+            self._metadata = None
+            self._format = None
+            self._frames_submitted = 0
+            self._paused_position_ms = 0
+            self._notify_state_change(PlaybackState.STOPPED)
 
     async def seek(self, position_ms: int) -> None:
-        if self._metadata is None:
-            return
-        target = max(0, position_ms)
-        was_paused = self._state == PlaybackState.PAUSED
-        await self._cancel_pipeline()
-        self._paused_position_ms = target
-        if was_paused:
-            self._notify_position_update(target)
-            return
-        url = await self._resolve_streaming_url(self._metadata.track_id)
-        self._notify_state_change(PlaybackState.LOADING)
-        await self._start_pipeline(url, target)
-        self._notify_state_change(PlaybackState.PLAYING)
+        async with self._lifecycle_lock:
+            if self._metadata is None:
+                return
+            target = max(0, position_ms)
+            was_paused = self._state == PlaybackState.PAUSED
+            await self._cancel_pipeline()
+            self._paused_position_ms = target
+            if was_paused:
+                self._notify_position_update(target)
+                return
+            url = await self._resolve_streaming_url(self._metadata.track_id)
+            self._notify_state_change(PlaybackState.LOADING)
+            await self._start_pipeline(url, target)
+            self._notify_state_change(PlaybackState.PLAYING)
 
     async def get_position(self) -> int:
-        if self._state == PlaybackState.PLAYING and self._pcm is not None:
-            delay = await asyncio.to_thread(self._pcm.delay_frames)
-            if delay is not None:
-                self._last_delay = delay
-        return self._position_ms()
+        async with self._lifecycle_lock:
+            if self._state == PlaybackState.PLAYING and self._pcm is not None:
+                delay = await _pcm_call(self._pcm.delay_frames)
+                if delay is not None:
+                    self._last_delay = delay
+            return self._position_ms()
 
     async def set_volume(self, level: int) -> None:
         # The player runs this backend in existing fixed-volume mode. Never alter PCM.

@@ -223,3 +223,58 @@ async def test_stop_interrupts_blocked_drain_before_closing_pcm() -> None:
 
     assert pcm.dropped and pcm.drained and pcm.closed
     assert await backend.get_state() == PlaybackState.STOPPED
+
+
+async def test_rapid_replacement_waits_for_previous_pcm_close() -> None:
+    events: list[str] = []
+
+    class OrderedPcm(FakePcm):
+        def __init__(self, name: str, *, block_close: bool = False) -> None:
+            super().__init__()
+            self.name = name
+            self.block_close = block_close
+            self.close_started = threading.Event()
+            self.release_close = threading.Event()
+
+        def open(self, audio_format: PcmFormat) -> None:
+            events.append(f"{self.name}.open")
+            super().open(audio_format)
+
+        def close(self) -> None:
+            events.append(f"{self.name}.close.started")
+            self.close_started.set()
+            if self.block_close:
+                assert self.release_close.wait(timeout=2)
+            super().close()
+            events.append(f"{self.name}.close.completed")
+
+    probe = OrderedPcm("probe")
+    old_pcm = OrderedPcm("old", block_close=True)
+    first_replacement_pcm = OrderedPcm("first-replacement")
+    final_pcm = OrderedPcm("final")
+    pcms = iter((probe, old_pcm, first_replacement_pcm, final_pcm))
+    decoders = iter(FakeDecoder() for _ in range(4))
+    backend = AlsaAudioBackend(
+        device="hw:Test,0",
+        pcm_factory=lambda: next(pcms),
+        decoder_factory=lambda: next(decoders),
+    )
+    assert await backend.connect()
+    await backend.play("first", _metadata())
+
+    first_replacement = asyncio.create_task(backend.play("second", _metadata()))
+    assert await asyncio.to_thread(old_pcm.close_started.wait, 1)
+
+    final_replacement = asyncio.create_task(backend.play("third", _metadata()))
+    await asyncio.sleep(0.05)
+
+    assert "old.close.completed" not in events
+    assert "first-replacement.open" not in events
+    assert "final.open" not in events
+
+    old_pcm.release_close.set()
+    await asyncio.gather(first_replacement, final_replacement)
+
+    assert events.index("old.close.completed") < events.index("first-replacement.open")
+    assert events.index("old.close.completed") < events.index("final.open")
+    await backend.stop()
