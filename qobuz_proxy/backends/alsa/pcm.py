@@ -161,7 +161,7 @@ class AlsaPcm:
 
         names = {
             16: [("S16_LE", 2)],
-            24: [("S24_3LE", 3), ("S24_LE", 4)],
+            24: [("S32_LE", 4)],
             32: [("S32_LE", 4)],
         }[audio_format.bits_per_sample]
         failures: list[str] = []
@@ -209,11 +209,9 @@ class AlsaPcm:
         if len(data) % 3:
             raise AlsaError("24-bit PCM chunk is not sample-aligned")
         output = bytearray((len(data) // 3) * 4)
-        out = 0
-        for offset in range(0, len(data), 3):
-            output[out : out + 3] = data[offset : offset + 3]
-            output[out + 3] = 0xFF if data[offset + 2] & 0x80 else 0
-            out += 4
+        for sample, offset in enumerate(range(0, len(data), 3)):
+            out = sample * 4
+            output[out + 1 : out + 4] = data[offset : offset + 3]
         return bytes(output)
 
     def write(self, data: bytes) -> int:
