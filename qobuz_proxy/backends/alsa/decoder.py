@@ -91,9 +91,6 @@ class FlacProcessDecoder:
                         "--sign=signed",
                         "--silent",
                     ]
-                    skip_samples = max(0, skip_ms) * audio_format.sample_rate // 1000
-                    if skip_samples:
-                        command.append(f"--skip={skip_samples}")
                     command.append("-")
                     self._process = await asyncio.create_subprocess_exec(
                         *command,
@@ -123,17 +120,25 @@ class FlacProcessDecoder:
                         frame_bytes = audio_format.channels * (
                             (audio_format.bits_per_sample + 7) // 8
                         )
+                        frames_to_skip = max(0, skip_ms) * audio_format.sample_rate // 1000
                         remainder = b""
                         while chunk := await stdout.read(self.chunk_size):
                             combined = remainder + chunk
                             aligned = len(combined) - (len(combined) % frame_bytes)
                             if aligned:
                                 pcm = combined[:aligned]
-                                pcm_bytes += len(pcm)
-                                await on_pcm(pcm)
+                                if frames_to_skip:
+                                    skipped = min(frames_to_skip, len(pcm) // frame_bytes)
+                                    pcm = pcm[skipped * frame_bytes :]
+                                    frames_to_skip -= skipped
+                                if pcm:
+                                    pcm_bytes += len(pcm)
+                                    await on_pcm(pcm)
                             remainder = combined[aligned:]
                         if remainder:
                             raise DecoderError("flac produced an incomplete PCM frame")
+                        if frames_to_skip:
+                            raise DecoderError("FLAC ended before the requested start position")
 
                     async def read_stderr() -> None:
                         nonlocal stderr_tail

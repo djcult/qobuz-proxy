@@ -84,6 +84,41 @@ async def test_play_from_is_atomic_and_uses_integer_pcm() -> None:
     assert pcm.dropped and pcm.closed and decoder.cancelled
 
 
+async def test_play_from_waits_until_first_retained_pcm_is_written() -> None:
+    class DelayedPcmDecoder(FakeDecoder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.format_sent = asyncio.Event()
+            self.send_pcm = asyncio.Event()
+
+        async def decode(self, url, *, skip_ms, on_format, on_pcm):  # type: ignore[no-untyped-def]
+            self.skip_ms = skip_ms
+            await on_format(PcmFormat(48000, 2, 24, 480000))
+            self.format_sent.set()
+            await self.send_pcm.wait()
+            await on_pcm(b"\x01\x02\x03\x04\x05\x06" * 480)
+            self.started.set()
+            await self.release.wait()
+
+    pcm = FakePcm()
+    decoder = DelayedPcmDecoder()
+    backend = AlsaAudioBackend(
+        device="hw:Test,0", pcm_factory=lambda: pcm, decoder_factory=lambda: decoder
+    )
+    assert await backend.connect()
+
+    play = asyncio.create_task(backend.play_from("https://cdn/track.flac", _metadata(), 2500))
+    await decoder.format_sent.wait()
+    assert not play.done()
+    assert await backend.get_state() == PlaybackState.LOADING
+
+    decoder.send_pcm.set()
+    await play
+    assert pcm.writes
+    assert await backend.get_state() == PlaybackState.PLAYING
+    await backend.stop()
+
+
 async def test_pause_and_resume_restart_at_audible_position_with_fresh_url() -> None:
     pcms: list[FakePcm] = []
     decoders: list[FakeDecoder] = []
@@ -120,6 +155,30 @@ async def test_pause_and_resume_restart_at_audible_position_with_fresh_url() -> 
     assert await backend.resume()
     assert urls == [("42", False)]
     assert decoders[-1].skip_ms == 5
+    assert await backend.get_state() == PlaybackState.PLAYING
+    await backend.stop()
+
+
+async def test_seek_restarts_through_shared_nonzero_start_pipeline() -> None:
+    decoders: list[FakeDecoder] = []
+
+    def decoder_factory() -> FakeDecoder:
+        decoder = FakeDecoder()
+        decoders.append(decoder)
+        return decoder
+
+    backend = AlsaAudioBackend(
+        device="hw:Test,0", pcm_factory=FakePcm, decoder_factory=decoder_factory
+    )
+    backend.set_streaming_url_resolver(
+        lambda _track_id, _force: asyncio.sleep(0, result="https://cdn/fresh.flac")
+    )
+    assert await backend.connect()
+    await backend.play("https://cdn/old.flac", _metadata())
+
+    await backend.seek(3750)
+
+    assert decoders[-1].skip_ms == 3750
     assert await backend.get_state() == PlaybackState.PLAYING
     await backend.stop()
 

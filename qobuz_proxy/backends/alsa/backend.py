@@ -117,8 +117,6 @@ class AlsaAudioBackend(AudioBackend):
             self._format = audio_format
             self._start_frame = position_ms * audio_format.sample_rate // 1000
             await asyncio.to_thread(pcm.open, audio_format)
-            if not started.done():
-                started.set_result(None)
 
         async def on_pcm(data: bytes) -> None:
             if generation != self._generation or self._pcm is None:
@@ -129,6 +127,8 @@ class AlsaAudioBackend(AudioBackend):
             if delay is not None:
                 self._last_delay = delay
             self._notify_position_update(self._position_ms())
+            if not started.done():
+                started.set_result(None)
 
         async def run() -> None:
             try:
@@ -157,6 +157,10 @@ class AlsaAudioBackend(AudioBackend):
                         on_format=on_format,
                         on_pcm=on_pcm,
                     )
+                if not started.done():
+                    raise DecoderError(
+                        "FLAC decoder produced no PCM at the requested start position"
+                    )
                 if generation != self._generation or self._pcm is None:
                     return
                 await asyncio.to_thread(self._pcm.drain)
@@ -173,7 +177,7 @@ class AlsaAudioBackend(AudioBackend):
                 if not started.done():
                     started.set_exception(exc)
                 elif generation == self._generation:
-                    logger.error(f"ALSA playback failed: {exc}")
+                    logger.exception("ALSA playback failed (%s): %r", type(exc).__name__, exc)
                     self._notify_state_change(PlaybackState.ERROR)
                     self._notify_playback_error(str(exc))
             finally:
