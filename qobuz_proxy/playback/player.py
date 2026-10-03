@@ -159,6 +159,7 @@ class QobuzPlayer:
         self.backend.on_position_update(self._on_position_update)
         self.backend.on_next_track_started(self._on_next_track_started)
         self.backend.on_playback_interrupted(self._on_playback_interrupted)
+        self.backend.set_streaming_url_resolver(self._resolve_backend_streaming_url)
 
         logger.info("QobuzPlayer initialized")
 
@@ -775,10 +776,6 @@ class QobuzPlayer:
         # Start playback
         success = await self._start_playback(position_ms)
 
-        # Seek if position > 0 and playback started
-        if success and position_ms > 0:
-            await self.backend.seek(position_ms)
-
         return success
 
     async def reload_current_track(self) -> bool:
@@ -823,8 +820,6 @@ class QobuzPlayer:
         if was_playing:
             # Restart playback from saved position
             success = await self._start_playback(saved_position)
-            if success and saved_position > 0:
-                await self.backend.seek(saved_position)
             return success
         else:
             # Was paused — just reset state, will re-fetch URL on next play
@@ -1051,10 +1046,6 @@ class QobuzPlayer:
 
         # Start playback
         success = await self._start_playback(position_ms)
-
-        # Seek if position > 0 and playback started
-        if success and position_ms > 0:
-            await self.backend.seek(position_ms)
 
         return success
 
@@ -1284,11 +1275,15 @@ class QobuzPlayer:
                     )
 
             # Start playback on backend
-            await self.backend.play(url, backend_meta)
+            if start_position_ms > 0:
+                await self.backend.play_from(url, backend_meta, start_position_ms)
+            else:
+                # Keep the established zero-position path for simple/test backends;
+                # play_from() exists to make nonzero starts atomic.
+                await self.backend.play(url, backend_meta)
 
-            # Update state. Report the start position, not 0 — the caller
-            # seeks the backend right after, and reporting 0 first makes the
-            # app's progress bar snap to 0:00 until the next heartbeat.
+            # Update state. Report the atomic start position, not 0, so the
+            # app's progress bar never snaps to 0:00 during a handoff.
             self._state = PlaybackState.PLAYING
             self._current_duration_ms = track.duration_ms
             self._unavailable_skip_count = 0
@@ -1381,6 +1376,23 @@ class QobuzPlayer:
     async def _get_track_url(self, track_id: str) -> Optional[str]:
         """Callback for queue to get streaming URL."""
         return await self.metadata.get_streaming_url(track_id)
+
+    async def _resolve_backend_streaming_url(
+        self, track_id: str, force: bool = False
+    ) -> Optional[str]:
+        """Refresh a signed URL for a backend restart and keep queue state coherent."""
+        current = self._current_track
+        if current is None or current.track_id != track_id:
+            logger.warning(f"Ignoring URL refresh for inactive track {track_id}")
+            return None
+        url = (
+            await self.metadata.refresh_streaming_url(track_id)
+            if force
+            else await self.metadata.get_streaming_url(track_id)
+        )
+        if url:
+            current.set_streaming_url(url)
+        return url
 
     async def _get_track_metadata(self, track_id: str) -> Optional[dict]:
         """Callback for queue to get track metadata."""

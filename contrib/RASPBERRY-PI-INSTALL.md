@@ -16,8 +16,9 @@ This guide covers installing QobuzProxy on a Raspberry Pi running Raspberry Pi O
 # Update package list
 sudo apt update
 
-# Install Python and venv
-sudo apt install -y python3-pip python3-venv
+# Install Python and venv. `flac` and libasound are required by the direct
+# ALSA backend; alsa-utils supplies aplay for identifying the exact hw device.
+sudo apt install -y python3-pip python3-venv flac libasound2 alsa-utils
 
 # Optional: Install git if you want to clone the repo
 sudo apt install -y git
@@ -125,6 +126,54 @@ server:
 logging:
   level: "info"  # Use "debug" for troubleshooting
 ```
+
+### Direct ALSA output (USB DAC)
+
+The ALSA backend is fixed-volume and sends integer PCM directly to an exact
+hardware PCM. It rejects `default` and `plughw:` because those names may invoke
+ALSA conversion. Connect the DAC, grant the service user audio-device access,
+and find its stable card identifier:
+
+```bash
+sudo usermod -aG audio pi
+cat /proc/asound/cards
+aplay -l
+aplay -L | sed -n '/^hw:/p'
+```
+
+Log out and back in (or reboot) after changing group membership. Then use the
+card name shown by `/proc/asound/cards`, not a potentially changing card number:
+
+```yaml
+qobuz:
+  max_quality: 27
+
+device:
+  name: "Audiolab 8300CDQ"
+
+backend:
+  type: "alsa"
+  alsa:
+    device: "hw:Audiolab,0"
+    latency_us: 500000
+
+server:
+  http_port: 8689
+  bind_address: "0.0.0.0"
+```
+
+Verify exclusive hardware access before starting QobuzProxy:
+
+```bash
+sudo -u pi aplay -D hw:Audiolab,0 --dump-hw-params /usr/share/sounds/alsa/Front_Center.wav
+sudo fuser -v /dev/snd/*
+flac --version
+```
+
+The selected DAC must accept each source rate and integer representation
+exactly. QobuzProxy never falls back to another device, ALSA plug conversion,
+resampling, floating-point PCM, or software volume. Unsupported formats fail
+with a diagnostic in the service log.
 
 ## Step 7: Test the Installation
 

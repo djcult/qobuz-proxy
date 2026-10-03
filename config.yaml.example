@@ -16,7 +16,7 @@ device:
   uuid: null                    # Auto-generated if not specified
 
 backend:
-  type: "dlna"                  # dlna or local
+  type: "dlna"                  # dlna, local, or alsa
   dlna:
     ip: "192.168.1.50"          # Required: DLNA device IP
     port: 1400                  # DLNA device port
@@ -26,6 +26,9 @@ backend:
   # local:
   #   device: "default"         # Audio device name or "default"
   #   buffer_size: 2048         # Audio buffer size in frames
+  # alsa:
+  #   device: "hw:CARD,0"       # Exact hardware PCM; default/plughw are rejected
+  #   latency_us: 500000         # ALSA hardware-buffer target
 
 server:
   http_port: 8689               # mDNS discovery HTTP server
@@ -63,3 +66,8 @@ logging:
 #   - name: "Headphones"
 #     backend: local
 #     audio_device: "Built-in Output"
+#
+#   - name: "Audiolab USB"
+#     backend: alsa
+#     alsa_device: "hw:Audiolab,0"
+#     max_quality: 27
