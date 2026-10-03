@@ -524,13 +524,27 @@ class QobuzPlayer:
                 and desired.queue_item_id not in (None, 0, queue_item_id)
             )
         )
+        # Transport intent belongs to the renderer, not to one track. Qobuz can
+        # therefore send target A, PLAYING, target B without repeating PLAYING
+        # for B. Carry only a still-current remote intent across navigation;
+        # position and context remain target-specific and are reset below.
+        carried_playing_state = (
+            desired.playing_state
+            if target_changed
+            and desired is not None
+            and desired.generation == self._command_generation
+            else None
+        )
         # STOP and PAUSE are cancellation boundaries: unlike PLAYING and
         # position fragments, they must prevent an in-flight load from starting.
         supersedes = target_changed or playing_state in (1, 3)
         if desired is None or desired.generation != self._command_generation or supersedes:
             gen = self._next_generation()
             if target_changed:
-                desired = _DesiredRemoteState(generation=gen)
+                desired = _DesiredRemoteState(
+                    generation=gen,
+                    playing_state=carried_playing_state,
+                )
             elif desired is None or desired.generation != gen - 1:
                 cur = self._current_track
                 desired = _DesiredRemoteState(
