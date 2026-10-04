@@ -300,8 +300,14 @@ class AlsaAudioBackend(AudioBackend):
                         id(pcm) if pcm is not None else "?",
                     )
             except asyncio.CancelledError:
-                logger.warning("PCM task wait cancelled id=%s", id(pcm) if pcm is not None else "?")
-                raise
+                # The playback task itself may terminate as cancelled during normal
+                # teardown. That means the old task is finished; cleanup must still
+                # continue to close its PCM handle. Caller cancellation is handled
+                # by the outer _cancel_pipeline() cleanup shield.
+                logger.info(
+                    "PCM playback task ended cancelled id=%s",
+                    id(pcm) if pcm is not None else "?",
+                )
             except (DecoderError, OSError) as exc:
                 logger.warning(
                     "PCM task wait ended with %s id=%s: %r",
