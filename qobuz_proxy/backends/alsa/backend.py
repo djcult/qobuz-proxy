@@ -275,22 +275,40 @@ class AlsaAudioBackend(AudioBackend):
             logger.info("PCM drop id=%s", id(pcm))
             await _pcm_call(pcm.drop)
         if decoder is not None:
-            await decoder.cancel()
+            logger.info("PCM decoder cancel begin id=%s", id(pcm) if pcm is not None else "?")
+            try:
+                await decoder.cancel()
+            finally:
+                logger.info("PCM decoder cancel end id=%s", id(pcm) if pcm is not None else "?")
         if task is not None and not task.done():
+            logger.info("PCM task wait begin id=%s", id(pcm) if pcm is not None else "?")
             try:
                 # drop() interrupts libasound write/drain and decoder.cancel()
                 # interrupts pipe I/O. Let their worker calls actually return
                 # before closing native handles; cancellation of to_thread()
                 # alone would not stop its underlying thread.
                 await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                logger.info("PCM task wait end id=%s", id(pcm) if pcm is not None else "?")
             except asyncio.TimeoutError:
+                logger.warning("PCM task wait timeout id=%s", id(pcm) if pcm is not None else "?")
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass
-            except (DecoderError, OSError):
-                pass
+                    logger.info(
+                        "PCM task cancelled after timeout id=%s",
+                        id(pcm) if pcm is not None else "?",
+                    )
+            except asyncio.CancelledError:
+                logger.warning("PCM task wait cancelled id=%s", id(pcm) if pcm is not None else "?")
+                raise
+            except (DecoderError, OSError) as exc:
+                logger.warning(
+                    "PCM task wait ended with %s id=%s: %r",
+                    type(exc).__name__,
+                    id(pcm) if pcm is not None else "?",
+                    exc,
+                )
         if pcm is not None:
             logger.info("PCM close begin id=%s", id(pcm))
             await _pcm_call(pcm.close)
