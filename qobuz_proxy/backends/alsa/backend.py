@@ -124,6 +124,12 @@ class AlsaAudioBackend(AudioBackend):
         self._decoder = self._decoder_factory()
         self._pcm = self._pcm_factory()
         pcm = self._pcm
+        logger.info(
+            "PCM create id=%s gen=%s track=%s",
+            id(pcm),
+            generation,
+            self._metadata.track_id if self._metadata else "?",
+        )
         started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         async def on_format(audio_format: PcmFormat) -> None:
@@ -131,7 +137,21 @@ class AlsaAudioBackend(AudioBackend):
                 raise RuntimeError(f"Unsupported source sample rate: {audio_format.sample_rate} Hz")
             self._format = audio_format
             self._start_frame = position_ms * audio_format.sample_rate // 1000
+            logger.info(
+                "PCM open begin id=%s gen=%s track=%s format=%s/%s",
+                id(pcm),
+                generation,
+                self._metadata.track_id if self._metadata else "?",
+                audio_format.sample_rate,
+                audio_format.bits_per_sample,
+            )
             await _pcm_call(pcm.open, audio_format)
+            logger.info(
+                "PCM open success id=%s gen=%s track=%s",
+                id(pcm),
+                generation,
+                self._metadata.track_id if self._metadata else "?",
+            )
 
         async def on_pcm(data: bytes) -> None:
             if generation != self._generation or self._pcm is not pcm:
@@ -197,7 +217,17 @@ class AlsaAudioBackend(AudioBackend):
                     self._notify_playback_error(str(exc))
             finally:
                 if generation == self._generation and self._pcm is pcm:
+                    logger.info(
+                        "PCM finalizer close begin id=%s gen=%s",
+                        id(pcm),
+                        generation,
+                    )
                     await _pcm_call(pcm.close)
+                    logger.info(
+                        "PCM finalizer close end id=%s gen=%s",
+                        id(pcm),
+                        generation,
+                    )
 
         self._task = asyncio.create_task(run())
         try:
@@ -230,11 +260,19 @@ class AlsaAudioBackend(AudioBackend):
     async def _cancel_pipeline_impl(self) -> None:
         self._generation += 1
         decoder, pcm, task = self._decoder, self._pcm, self._task
+        if pcm is not None:
+            logger.info(
+                "PCM cancel begin id=%s gen=%s track=%s",
+                id(pcm),
+                self._generation,
+                self._metadata.track_id if self._metadata else "?",
+            )
         self._decoder = None
         self._pcm = None
         self._task = None
         if pcm is not None:
             # drop() is specifically used to interrupt blocked write/drain calls.
+            logger.info("PCM drop id=%s", id(pcm))
             await _pcm_call(pcm.drop)
         if decoder is not None:
             await decoder.cancel()
@@ -254,7 +292,9 @@ class AlsaAudioBackend(AudioBackend):
             except (DecoderError, OSError):
                 pass
         if pcm is not None:
+            logger.info("PCM close begin id=%s", id(pcm))
             await _pcm_call(pcm.close)
+            logger.info("PCM close end id=%s", id(pcm))
 
     async def pause(self) -> None:
         async with self._lifecycle_lock:
