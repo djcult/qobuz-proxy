@@ -124,12 +124,6 @@ class AlsaAudioBackend(AudioBackend):
         self._decoder = self._decoder_factory()
         self._pcm = self._pcm_factory()
         pcm = self._pcm
-        logger.info(
-            "PCM create id=%s gen=%s track=%s",
-            id(pcm),
-            generation,
-            self._metadata.track_id if self._metadata else "?",
-        )
         started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
         async def on_format(audio_format: PcmFormat) -> None:
@@ -137,21 +131,7 @@ class AlsaAudioBackend(AudioBackend):
                 raise RuntimeError(f"Unsupported source sample rate: {audio_format.sample_rate} Hz")
             self._format = audio_format
             self._start_frame = position_ms * audio_format.sample_rate // 1000
-            logger.info(
-                "PCM open begin id=%s gen=%s track=%s format=%s/%s",
-                id(pcm),
-                generation,
-                self._metadata.track_id if self._metadata else "?",
-                audio_format.sample_rate,
-                audio_format.bits_per_sample,
-            )
             await _pcm_call(pcm.open, audio_format)
-            logger.info(
-                "PCM open success id=%s gen=%s track=%s",
-                id(pcm),
-                generation,
-                self._metadata.track_id if self._metadata else "?",
-            )
 
         async def on_pcm(data: bytes) -> None:
             if generation != self._generation or self._pcm is not pcm:
@@ -217,17 +197,7 @@ class AlsaAudioBackend(AudioBackend):
                     self._notify_playback_error(str(exc))
             finally:
                 if generation == self._generation and self._pcm is pcm:
-                    logger.info(
-                        "PCM finalizer close begin id=%s gen=%s",
-                        id(pcm),
-                        generation,
-                    )
                     await _pcm_call(pcm.close)
-                    logger.info(
-                        "PCM finalizer close end id=%s gen=%s",
-                        id(pcm),
-                        generation,
-                    )
 
         self._task = asyncio.create_task(run())
         try:
@@ -260,65 +230,37 @@ class AlsaAudioBackend(AudioBackend):
     async def _cancel_pipeline_impl(self) -> None:
         self._generation += 1
         decoder, pcm, task = self._decoder, self._pcm, self._task
-        if pcm is not None:
-            logger.info(
-                "PCM cancel begin id=%s gen=%s track=%s",
-                id(pcm),
-                self._generation,
-                self._metadata.track_id if self._metadata else "?",
-            )
         self._decoder = None
         self._pcm = None
         self._task = None
         if pcm is not None:
             # drop() is specifically used to interrupt blocked write/drain calls.
-            logger.info("PCM drop id=%s", id(pcm))
             await _pcm_call(pcm.drop)
         if decoder is not None:
-            logger.info("PCM decoder cancel begin id=%s", id(pcm) if pcm is not None else "?")
-            try:
-                await decoder.cancel()
-            finally:
-                logger.info("PCM decoder cancel end id=%s", id(pcm) if pcm is not None else "?")
+            await decoder.cancel()
         if task is not None and not task.done():
-            logger.info("PCM task wait begin id=%s", id(pcm) if pcm is not None else "?")
             try:
                 # drop() interrupts libasound write/drain and decoder.cancel()
                 # interrupts pipe I/O. Let their worker calls actually return
                 # before closing native handles; cancellation of to_thread()
                 # alone would not stop its underlying thread.
                 await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-                logger.info("PCM task wait end id=%s", id(pcm) if pcm is not None else "?")
             except asyncio.TimeoutError:
-                logger.warning("PCM task wait timeout id=%s", id(pcm) if pcm is not None else "?")
+                logger.warning("ALSA playback task did not stop within 2 seconds")
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
-                    logger.info(
-                        "PCM task cancelled after timeout id=%s",
-                        id(pcm) if pcm is not None else "?",
-                    )
+                    pass
             except asyncio.CancelledError:
-                # The playback task itself may terminate as cancelled during normal
-                # teardown. That means the old task is finished; cleanup must still
-                # continue to close its PCM handle. Caller cancellation is handled
-                # by the outer _cancel_pipeline() cleanup shield.
-                logger.info(
-                    "PCM playback task ended cancelled id=%s",
-                    id(pcm) if pcm is not None else "?",
-                )
-            except (DecoderError, OSError) as exc:
-                logger.warning(
-                    "PCM task wait ended with %s id=%s: %r",
-                    type(exc).__name__,
-                    id(pcm) if pcm is not None else "?",
-                    exc,
-                )
+                # A playback task may terminate as cancelled during normal
+                # teardown. Cleanup must continue so its PCM handle is closed.
+                # Caller cancellation is handled by _cancel_pipeline()'s shield.
+                pass
+            except (DecoderError, OSError):
+                pass
         if pcm is not None:
-            logger.info("PCM close begin id=%s", id(pcm))
             await _pcm_call(pcm.close)
-            logger.info("PCM close end id=%s", id(pcm))
 
     async def pause(self) -> None:
         async with self._lifecycle_lock:
