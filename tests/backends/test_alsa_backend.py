@@ -225,6 +225,50 @@ async def test_stop_interrupts_blocked_drain_before_closing_pcm() -> None:
     assert await backend.get_state() == PlaybackState.STOPPED
 
 
+async def test_cancelled_playback_task_still_closes_pcm_before_replacement() -> None:
+    """A playback task ending cancelled must not abort native PCM cleanup."""
+
+    class CancelledOnTeardownDecoder(FakeDecoder):
+        async def decode(self, url, *, skip_ms, on_format, on_pcm):  # type: ignore[no-untyped-def]
+            self.skip_ms = skip_ms
+            await on_format(PcmFormat(48000, 2, 24, 480000))
+            await on_pcm(b"\x01\x02\x03\x04\x05\x06" * 480)
+            self.started.set()
+            await self.release.wait()
+            raise asyncio.CancelledError
+
+    pcms: list[FakePcm] = []
+    decoders: list[CancelledOnTeardownDecoder] = []
+
+    def pcm_factory() -> FakePcm:
+        pcm = FakePcm()
+        pcms.append(pcm)
+        return pcm
+
+    def decoder_factory() -> CancelledOnTeardownDecoder:
+        decoder = CancelledOnTeardownDecoder()
+        decoders.append(decoder)
+        return decoder
+
+    backend = AlsaAudioBackend(
+        device="hw:Test,0",
+        pcm_factory=pcm_factory,
+        decoder_factory=decoder_factory,
+    )
+    assert await backend.connect()
+
+    await backend.play("first", _metadata())
+    old_pcm = pcms[-1]
+    await backend.play("second", _metadata())
+
+    assert old_pcm.dropped
+    assert old_pcm.closed
+    assert pcms[-1] is not old_pcm
+    assert pcms[-1].format == PcmFormat(48000, 2, 24, 480000)
+
+    await backend.stop()
+
+
 async def test_rapid_replacement_waits_for_previous_pcm_close() -> None:
     events: list[str] = []
 
