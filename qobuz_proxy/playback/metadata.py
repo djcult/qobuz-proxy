@@ -326,8 +326,19 @@ class MetadataService:
             qualities = self._get_quality_fallback_order()
 
             for quality in qualities:
+                logger.info(
+                    f"Qobuz URL request: track={metadata.track_id} requested_format={quality} "
+                    f"({AudioQuality.get_name(quality)})"
+                )
                 result = await self._api.get_track_url(metadata.track_id, quality)
                 if result:
+                    logger.info(
+                        f"Qobuz URL response: track={metadata.track_id} requested_format={quality} "
+                        f"returned_format={result.get('format_id', quality)} "
+                        f"bit_depth={result.get('bit_depth', 0)} "
+                        f"sampling_rate_khz={result.get('sampling_rate', 0)} "
+                        f"mime_type={result.get('mime_type', '')}"
+                    )
                     metadata.streaming_url = result["url"]
                     metadata.streaming_url_expires_at = int(time.time()) + self.URL_TTL_SECONDS
                     # Use the actual format_id from API response (may differ from requested)
