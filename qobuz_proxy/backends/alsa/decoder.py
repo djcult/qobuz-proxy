@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
@@ -10,6 +11,8 @@ from typing import Awaitable, Callable, Optional
 import aiohttp
 
 from .pcm import PcmFormat
+
+logger = logging.getLogger(__name__)
 
 PCMConsumer = Callable[[bytes], Awaitable[None]]
 FormatConsumer = Callable[[PcmFormat], Awaitable[None]]
@@ -80,6 +83,11 @@ class FlacProcessDecoder:
                     prefix = await response.content.readexactly(42)
                     compressed_bytes += len(prefix)
                     audio_format = parse_streaminfo(prefix)
+                    logger.info(
+                        f"FLAC STREAMINFO: sample_rate_hz={audio_format.sample_rate} "
+                        f"bit_depth={audio_format.bits_per_sample} "
+                        f"channels={audio_format.channels}"
+                    )
                     await on_format(audio_format)
 
                     command = [
