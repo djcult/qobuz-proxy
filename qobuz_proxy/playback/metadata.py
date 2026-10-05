@@ -25,8 +25,8 @@ class AudioQuality:
     NAMES: dict[int, str] = {
         5: "MP3 320kbps",
         6: "FLAC CD (16-bit/44.1kHz)",
-        7: "FLAC Hi-Res (24-bit/96kHz)",
-        27: "FLAC Hi-Res (24-bit/192kHz)",
+        7: "FLAC Hi-Res (up to 24-bit/96kHz)",
+        27: "FLAC Hi-Res (up to 24-bit/192kHz)",
     }
 
     @classmethod
@@ -326,19 +326,8 @@ class MetadataService:
             qualities = self._get_quality_fallback_order()
 
             for quality in qualities:
-                logger.info(
-                    f"Qobuz URL request: track={metadata.track_id} requested_format={quality} "
-                    f"({AudioQuality.get_name(quality)})"
-                )
                 result = await self._api.get_track_url(metadata.track_id, quality)
                 if result:
-                    logger.info(
-                        f"Qobuz URL response: track={metadata.track_id} requested_format={quality} "
-                        f"returned_format={result.get('format_id', quality)} "
-                        f"bit_depth={result.get('bit_depth', 0)} "
-                        f"sampling_rate_khz={result.get('sampling_rate', 0)} "
-                        f"mime_type={result.get('mime_type', '')}"
-                    )
                     metadata.streaming_url = result["url"]
                     metadata.streaming_url_expires_at = int(time.time()) + self.URL_TTL_SECONDS
                     # Use the actual format_id from API response (may differ from requested)
@@ -395,7 +384,12 @@ class MetadataService:
         Args:
             metadata: Track metadata to log
         """
-        quality_name = AudioQuality.get_name(metadata.actual_quality)
+        if metadata.bit_depth and metadata.sample_rate:
+            sample_rate_khz = metadata.sample_rate / 1000
+            sample_rate_text = f"{sample_rate_khz:g}kHz"
+            quality_name = f"{metadata.bit_depth}-bit/{sample_rate_text} FLAC"
+        else:
+            quality_name = AudioQuality.get_name(metadata.actual_quality)
         logger.info(
             f"Now playing: {metadata.artist} - {metadata.title} [{metadata.album}] ({quality_name})"
         )
