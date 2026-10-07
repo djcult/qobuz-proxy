@@ -17,6 +17,7 @@ def make_app() -> web.Application:
     app["on_add_speaker"] = AsyncMock(return_value={"id": "test", "name": "Test"})
     app["on_edit_speaker"] = AsyncMock(return_value={"id": "test", "name": "Test"})
     app["on_remove_speaker"] = AsyncMock(return_value=True)
+    app["on_control_speaker"] = AsyncMock()
     app["local_audio_enabled"] = False
     register_routes(app)
     return app
@@ -183,3 +184,43 @@ class TestSpeakerCRUD:
         client.app["on_remove_speaker"] = AsyncMock(side_effect=KeyError("not-found"))
         resp = await client.delete("/api/speakers/not-found")
         assert resp.status == 404
+
+
+class TestSpeakerPlaybackControl:
+    async def test_control_speaker(self, client: TestClient) -> None:
+        client.app["on_control_speaker"] = AsyncMock(
+            return_value={
+                "speaker_id": "cdq2",
+                "action": "toggle",
+                "accepted": True,
+                "speaker": {"id": "cdq2", "status": "paused"},
+            }
+        )
+        resp = await client.post("/api/speakers/cdq2/actions/toggle")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["accepted"] is True
+        client.app["on_control_speaker"].assert_awaited_once_with("cdq2", "toggle")
+
+    async def test_control_rejected_returns_conflict(self, client: TestClient) -> None:
+        client.app["on_control_speaker"] = AsyncMock(
+            return_value={
+                "speaker_id": "cdq2",
+                "action": "pause",
+                "accepted": False,
+                "speaker": {"id": "cdq2", "status": "idle"},
+            }
+        )
+        resp = await client.post("/api/speakers/cdq2/actions/pause")
+        assert resp.status == 409
+
+    async def test_control_unknown_speaker(self, client: TestClient) -> None:
+        client.app["on_control_speaker"] = AsyncMock(side_effect=KeyError("missing"))
+        resp = await client.post("/api/speakers/missing/actions/play")
+        assert resp.status == 404
+
+    async def test_control_unknown_action(self, client: TestClient) -> None:
+        client.app["on_control_speaker"] = AsyncMock()
+        resp = await client.post("/api/speakers/cdq2/actions/explode")
+        assert resp.status == 404
+        client.app["on_control_speaker"].assert_not_awaited()
