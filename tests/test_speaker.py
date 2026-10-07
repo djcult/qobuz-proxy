@@ -676,3 +676,51 @@ class TestQualitySourceStatus:
         assert cfg["max_quality"] == 27
         assert cfg["effective_quality"] == 27
         assert cfg["quality_source"] == "manual"
+
+
+class TestSpeakerPlaybackControls:
+    async def test_play_delegates_to_player(self):
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._player = MagicMock()
+        speaker._player.play = AsyncMock(return_value=True)
+        assert await speaker.play() is True
+        speaker._player.play.assert_awaited_once_with()
+
+    async def test_pause_delegates_to_player(self):
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._player = MagicMock()
+        speaker._player.pause = AsyncMock(return_value=True)
+        assert await speaker.pause() is True
+        speaker._player.pause.assert_awaited_once_with()
+
+    async def test_toggle_pauses_when_playing(self):
+        from qobuz_proxy.backends import PlaybackState
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._player = MagicMock()
+        speaker._player.state = PlaybackState.PLAYING
+        speaker._player.pause = AsyncMock(return_value=True)
+        assert await speaker.toggle_playback() is True
+        speaker._player.pause.assert_awaited_once_with()
+
+    async def test_toggle_plays_when_not_playing(self):
+        from qobuz_proxy.backends import PlaybackState
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._player = MagicMock()
+        speaker._player.state = PlaybackState.PAUSED
+        speaker._player.play = AsyncMock(return_value=True)
+        assert await speaker.toggle_playback() is True
+        speaker._player.play.assert_awaited_once_with()
+
+    async def test_next_requests_qobuz_authoritative_queue(self):
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._ws_manager = MagicMock()
+        speaker._ws_manager.request_next_track = AsyncMock()
+        assert await speaker.next() is True
+        speaker._ws_manager.request_next_track.assert_awaited_once_with()
+
+    async def test_previous_delegates_to_player(self):
+        speaker = Speaker(config=_make_speaker_config(), api_client=_make_api_client(), app_id="id")
+        speaker._player = MagicMock()
+        speaker._player.previous_track = AsyncMock(return_value=True)
+        assert await speaker.previous() is True
+        speaker._player.previous_track.assert_awaited_once_with()
