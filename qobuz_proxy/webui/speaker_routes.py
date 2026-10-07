@@ -122,6 +122,23 @@ async def _handle_remove_speaker(request: web.Request) -> web.Response:
         return web.json_response({"error": "speaker not found"}, status=404)
 
 
+async def _handle_control_speaker(request: web.Request) -> web.Response:
+    """Apply a semantic playback action to a running speaker."""
+    speaker_id = request.match_info["speaker_id"]
+    action = request.match_info["action"]
+    if action not in {"play", "pause", "toggle", "next", "previous"}:
+        return web.json_response({"error": "unsupported playback action"}, status=404)
+
+    callback = request.app["on_control_speaker"]
+    try:
+        result = await callback(speaker_id, action)
+        return web.json_response(result, status=200 if result["accepted"] else 409)
+    except KeyError:
+        return web.json_response({"error": "speaker not found"}, status=404)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 def register_speaker_routes(app: web.Application) -> None:
     """Register speaker management routes."""
     app.router.add_post("/api/discover/dlna", _handle_discover_dlna)
@@ -130,3 +147,4 @@ def register_speaker_routes(app: web.Application) -> None:
     app.router.add_post("/api/speakers", _handle_add_speaker)
     app.router.add_put("/api/speakers/{speaker_id}", _handle_edit_speaker)
     app.router.add_delete("/api/speakers/{speaker_id}", _handle_remove_speaker)
+    app.router.add_post("/api/speakers/{speaker_id}/actions/{action}", _handle_control_speaker)
