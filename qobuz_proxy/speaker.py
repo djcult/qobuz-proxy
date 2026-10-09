@@ -201,16 +201,12 @@ class Speaker:
         return await self._ws_manager.request_next_track(lambda: self._is_running)
 
     async def previous(self) -> bool:
-        """Restart the current track, or use the local queue when available.
-
-        Qobuz Connect currently exposes no confirmed renderer-to-server
-        previous action in the reverse-engineered protocol. The player can
-        still implement the standard restart-current behaviour and can move
-        backwards when its local queue contains history.
-        """
-        if not self._player:
+        """Ask Qobuz Connect to navigate its authoritative queue backwards."""
+        if not self._ws_manager:
             return False
-        return await self._player.previous_track()
+        return await self._ws_manager.request_previous_track(
+            lambda: self._is_running
+        )
 
     def _build_component_config(self) -> Config:
         """
