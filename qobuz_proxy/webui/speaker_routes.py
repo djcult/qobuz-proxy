@@ -1,5 +1,6 @@
 """Speaker management API routes: CRUD and discovery."""
 
+import asyncio
 import logging
 from aiohttp import web
 from qobuz_proxy.backends.dlna.discovery import discover_dlna_devices
@@ -122,6 +123,40 @@ async def _handle_remove_speaker(request: web.Request) -> web.Response:
         return web.json_response({"error": "speaker not found"}, status=404)
 
 
+async def _handle_control_speaker(request: web.Request) -> web.Response:
+    """Queue a semantic playback action and acknowledge without waiting for playback."""
+    speaker_id = request.match_info["speaker_id"]
+    action = request.match_info["action"]
+    if action not in {"play", "pause", "toggle", "next", "previous"}:
+        return web.json_response({"error": "unsupported playback action"}, status=404)
+
+    # Reject unknown or offline speakers before acknowledging the request.
+    speakers = request.app["get_speakers"]()
+    speaker = next((s for s in speakers if s["id"] == speaker_id), None)
+    if speaker is None:
+        return web.json_response({"error": "speaker not found"}, status=404)
+    if speaker["status"] in {"disconnected", "starting"}:
+        return web.json_response({"error": "speaker not running"}, status=409)
+
+    async def execute() -> None:
+        try:
+            result = await request.app["on_control_speaker"](speaker_id, action)
+            if not result["accepted"]:
+                logger.warning("Playback action rejected: %s on %s", action, speaker_id)
+        except Exception:
+            logger.exception("Playback action failed: %s on %s", action, speaker_id)
+
+    # Hold a strong reference until completion, including after HTTP disconnect.
+    tasks = request.app.setdefault("_control_tasks", set())
+    task = asyncio.create_task(execute())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return web.json_response(
+        {"speaker_id": speaker_id, "action": action, "accepted": True, "queued": True},
+        status=202,
+    )
+
+
 def register_speaker_routes(app: web.Application) -> None:
     """Register speaker management routes."""
     app.router.add_post("/api/discover/dlna", _handle_discover_dlna)
@@ -130,3 +165,4 @@ def register_speaker_routes(app: web.Application) -> None:
     app.router.add_post("/api/speakers", _handle_add_speaker)
     app.router.add_put("/api/speakers/{speaker_id}", _handle_edit_speaker)
     app.router.add_delete("/api/speakers/{speaker_id}", _handle_remove_speaker)
+    app.router.add_post("/api/speakers/{speaker_id}/actions/{action}", _handle_control_speaker)

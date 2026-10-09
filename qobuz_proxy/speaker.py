@@ -174,6 +174,40 @@ class Speaker:
             "now_playing": now_playing,
         }
 
+    async def play(self) -> bool:
+        """Resume the current Qobuz playback item."""
+        if not self._player:
+            return False
+        return await self._player.play()
+
+    async def pause(self) -> bool:
+        """Pause the current Qobuz playback item."""
+        if not self._player:
+            return False
+        return await self._player.pause()
+
+    async def toggle_playback(self) -> bool:
+        """Toggle between playing and paused states."""
+        if not self._player:
+            return False
+        if self._player.state == PlaybackState.PLAYING:
+            return await self._player.pause()
+        return await self._player.play()
+
+    async def next(self) -> bool:
+        """Ask Qobuz Connect to advance its authoritative queue."""
+        if not self._ws_manager:
+            return False
+        return await self._ws_manager.request_next_track(lambda: self._is_running)
+
+    async def previous(self) -> bool:
+        """Ask Qobuz Connect to navigate its authoritative queue backwards."""
+        if not self._ws_manager:
+            return False
+        return await self._ws_manager.request_previous_track(
+            lambda: self._is_running
+        )
+
     def _build_component_config(self) -> Config:
         """
         Synthesize a Config object from this speaker's SpeakerConfig.
