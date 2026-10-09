@@ -1,5 +1,6 @@
 """Speaker management API routes: CRUD and discovery."""
 
+import asyncio
 import logging
 from aiohttp import web
 from qobuz_proxy.backends.dlna.discovery import discover_dlna_devices
@@ -123,20 +124,37 @@ async def _handle_remove_speaker(request: web.Request) -> web.Response:
 
 
 async def _handle_control_speaker(request: web.Request) -> web.Response:
-    """Apply a semantic playback action to a running speaker."""
+    """Queue a semantic playback action and acknowledge without waiting for playback."""
     speaker_id = request.match_info["speaker_id"]
     action = request.match_info["action"]
     if action not in {"play", "pause", "toggle", "next", "previous"}:
         return web.json_response({"error": "unsupported playback action"}, status=404)
 
-    callback = request.app["on_control_speaker"]
-    try:
-        result = await callback(speaker_id, action)
-        return web.json_response(result, status=200 if result["accepted"] else 409)
-    except KeyError:
+    # Reject unknown or offline speakers before acknowledging the request.
+    speakers = request.app["get_speakers"]()
+    speaker = next((s for s in speakers if s["id"] == speaker_id), None)
+    if speaker is None:
         return web.json_response({"error": "speaker not found"}, status=404)
-    except ValueError as e:
-        return web.json_response({"error": str(e)}, status=400)
+    if speaker["status"] in {"disconnected", "starting"}:
+        return web.json_response({"error": "speaker not running"}, status=409)
+
+    async def execute() -> None:
+        try:
+            result = await request.app["on_control_speaker"](speaker_id, action)
+            if not result["accepted"]:
+                logger.warning("Playback action rejected: %s on %s", action, speaker_id)
+        except Exception:
+            logger.exception("Playback action failed: %s on %s", action, speaker_id)
+
+    # Hold a strong reference until completion, including after HTTP disconnect.
+    tasks = request.app.setdefault("_control_tasks", set())
+    task = asyncio.create_task(execute())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return web.json_response(
+        {"speaker_id": speaker_id, "action": action, "accepted": True, "queued": True},
+        status=202,
+    )
 
 
 def register_speaker_routes(app: web.Application) -> None:
