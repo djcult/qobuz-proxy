@@ -136,6 +136,8 @@ class Speaker:
                 "album": meta.get("album", ""),
                 "album_art_url": meta.get("artwork_url", ""),
                 "quality": meta.get("quality_name", ""),
+                "duration_seconds": self._player.duration_ms / 1000,
+                "position_seconds": min(self._player.current_position_ms, self._player.duration_ms) / 1000,
             }
             # In fixed-volume mode the proxy never touches or tracks the
             # renderer's level, so the cached value is not meaningful — omit it.
