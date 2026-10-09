@@ -198,8 +198,7 @@ class Speaker:
         """Ask Qobuz Connect to advance its authoritative queue."""
         if not self._ws_manager:
             return False
-        await self._ws_manager.request_next_track()
-        return True
+        return await self._ws_manager.request_next_track(lambda: self._is_running)
 
     async def previous(self) -> bool:
         """Restart the current track, or use the local queue when available.
