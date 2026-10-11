@@ -23,9 +23,8 @@ def test_monitor_packet(tmp_path):
         monitor.publish(source, PcmFormat(96000, 2, 24))
         packet = receiver.recv(16384)
         magic, version, channels, bits, rate, frames = HEADER.unpack_from(packet)
-        assert (magic, version, channels, bits, rate, frames) == (
-            MAGIC, VERSION, 2, 24, 682,  # overwritten below
-        )
+        assert (magic, version, channels, bits, rate, frames) == (MAGIC, VERSION, 2, 24, 96000, 682)
+        assert packet[HEADER.size:] == source[:682 * 6]
     finally:
         monitor.close()
         receiver.close()
