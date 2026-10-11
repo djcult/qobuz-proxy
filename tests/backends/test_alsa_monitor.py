@@ -28,11 +28,11 @@ def test_contiguous_monitor_window(tmp_path):
         monitor.publish(source[:midpoint], fmt)
         monitor.publish(source[midpoint:], fmt)
         packet = receiver.recv(65536)
-        magic, version, channels, bits, rate, count = HEADER.unpack_from(packet)
+        magic, version, channels, bits, rate, count, presentation = HEADER.unpack_from(packet)
         assert (magic, version, channels, bits, rate, count) == (
             MAGIC, VERSION, 1, 16, 48000, frames
         )
-        expected = b"".join(struct.pack("<h", i % 20000) for i in range(frames))
+        assert isinstance(presentation, float)\n        expected = b"".join(struct.pack("<h", i % 20000) for i in range(frames))
         assert packet[HEADER.size:] == expected
     finally:
         monitor.close()
