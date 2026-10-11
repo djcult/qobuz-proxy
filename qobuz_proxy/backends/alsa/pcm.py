@@ -208,10 +208,13 @@ class AlsaPcm:
             return data
         if len(data) % 3:
             raise AlsaError("24-bit PCM chunk is not sample-aligned")
+        # Left-align signed 24-bit little-endian PCM in a 32-bit container.
+        # The low byte stays zero; extended slices copy each source byte in C
+        # rather than iterating through every sample in Python.
         output = bytearray((len(data) // 3) * 4)
-        for sample, offset in enumerate(range(0, len(data), 3)):
-            out = sample * 4
-            output[out + 1 : out + 4] = data[offset : offset + 3]
+        output[1::4] = data[0::3]
+        output[2::4] = data[1::3]
+        output[3::4] = data[2::3]
         return bytes(output)
 
     def write(self, data: bytes) -> int:
