@@ -73,8 +73,9 @@ class PlaybackCommandHandler:
         self._deactivation_generation: Optional[int] = None
 
     def note_connected(self) -> None:
-        """Wait for explicit server activation on each new connection."""
+        """Wait for activation; arm a brief one-shot reconnect replay guard."""
         self.note_disconnected()
+        self.player.note_websocket_reconnected()
 
     def note_disconnected(self) -> None:
         """Invalidate commands from the old connection without stopping current audio."""
