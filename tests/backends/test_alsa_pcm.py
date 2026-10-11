@@ -43,3 +43,17 @@ def test_24_bit_samples_are_left_aligned_without_losing_significant_bits() -> No
     pcm._container_bytes = 4
     source = bytes.fromhex("000000 ffff7f 000080 ffffff")
     assert pcm._packed_for_device(source) == bytes.fromhex("00000000 00ffff7f 00000080 00ffffff")
+
+
+@pytest.mark.parametrize("samples", [1, 2, 3, 7, 128, 4096])
+def test_24_bit_bulk_packing_matches_reference(samples: int) -> None:
+    pcm = AlsaPcm("hw:Test,0")
+    pcm._format = PcmFormat(192000, 2, 24)
+    pcm._container_bytes = 4
+    # Deterministic data covers negative and positive signed 24-bit values.
+    source = bytes(((i * 73 + 19) & 255) for i in range(samples * 3))
+    reference = b"".join(
+        bytes(1) + source[i:i + 3]
+        for i in range(0, len(source), 3)
+    )
+    assert pcm._packed_for_device(source) == reference
