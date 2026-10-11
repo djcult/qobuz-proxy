@@ -32,7 +32,8 @@ def test_contiguous_monitor_window(tmp_path):
         assert (magic, version, channels, bits, rate, count) == (
             MAGIC, VERSION, 1, 16, 48000, frames
         )
-        assert isinstance(presentation, float)\n        expected = b"".join(struct.pack("<h", i % 20000) for i in range(frames))
+        assert isinstance(presentation, float)
+        expected = b"".join(struct.pack("<h", i % 20000) for i in range(frames))
         assert packet[HEADER.size:] == expected
     finally:
         monitor.close()
