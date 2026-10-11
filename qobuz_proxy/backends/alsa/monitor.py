@@ -55,14 +55,16 @@ class PcmMonitor:
         count = min(65535, window_frames // stride)
         output = bytearray(count * 2)
         try:
+            # Signed LE conversion to 16-bit is exact byte selection:
+            # 16-bit: bytes 0,1; 24-bit: bytes 1,2; 32-bit: bytes 2,3.
+            # Extended slices do the work in C rather than a Python sample loop.
             start = len(self._buffer) - max_bytes
-            for i in range(count):
-                offset = start + i * stride * frame_bytes
-                value = int.from_bytes(
-                    self._buffer[offset:offset + width], "little", signed=True
-                )
-                sample = value >> max(0, fmt.bits_per_sample - 16)
-                struct.pack_into("<h", output, i * 2, sample)
+            sample_step = stride * frame_bytes
+            low_byte = width - 2
+            first = start + low_byte
+            last = first + count * sample_step
+            output[0::2] = self._buffer[first:last:sample_step]
+            output[1::2] = self._buffer[first + 1:last + 1:sample_step]
             packet = HEADER.pack(MAGIC, VERSION, 1, 16,
                                  fmt.sample_rate // stride, count) + output
             sock.sendto(packet, self.path)
