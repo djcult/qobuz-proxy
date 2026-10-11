@@ -12,6 +12,7 @@ from qobuz_proxy.backends.base import AudioBackend
 from qobuz_proxy.backends.types import BackendInfo, BackendTrackMetadata, PlaybackState
 
 from .decoder import DecoderError, FlacProcessDecoder
+from .monitor import PcmMonitor
 from .pcm import AlsaPcm, PcmDevice, PcmFormat
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ class AlsaAudioBackend(AudioBackend):
         self._start_frame = 0
         self._frames_submitted = 0
         self._last_delay: int | None = None
+        self._monitor = PcmMonitor()
         self._paused_position_ms = 0
         # The ALSA device is exclusive. This lock belongs here rather than in the
         # player so every backend entry point observes the same close-before-open
@@ -100,6 +102,7 @@ class AlsaAudioBackend(AudioBackend):
 
     async def disconnect(self) -> None:
         await self.stop()
+        self._monitor.close()
         self._is_connected = False
 
     async def play(self, url: str, metadata: BackendTrackMetadata) -> None:
@@ -137,6 +140,8 @@ class AlsaAudioBackend(AudioBackend):
             if generation != self._generation or self._pcm is not pcm:
                 raise asyncio.CancelledError
             frames = await _pcm_call(pcm.write, data)
+            if self._format is not None:
+                self._monitor.publish(data, self._format)
             self._frames_submitted += frames
             delay = await _pcm_call(pcm.delay_frames)
             if delay is not None:
