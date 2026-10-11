@@ -13,8 +13,8 @@ import time
 from .pcm import PcmFormat
 
 MAGIC = b"QPCM"
-VERSION = 1
-HEADER = struct.Struct("<4sBBBIH")
+VERSION = 2
+HEADER = struct.Struct("<4sBBBIHd")  # v2 includes monotonic presentation time
 
 
 class PcmMonitor:
@@ -29,7 +29,7 @@ class PcmMonitor:
             self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             self.sock.setblocking(False)
 
-    def publish(self, data: bytes, fmt: PcmFormat) -> None:
+    def publish(self, data: bytes, fmt: PcmFormat, *, delay_frames: int | None = None) -> None:
         sock = self.sock
         if sock is None:
             return
@@ -64,7 +64,7 @@ class PcmMonitor:
                 sample = value >> max(0, fmt.bits_per_sample - 16)
                 struct.pack_into("<h", output, i * 2, sample)
             packet = HEADER.pack(MAGIC, VERSION, 1, 16,
-                                 fmt.sample_rate // stride, count) + output
+                                 fmt.sample_rate // stride, count,\n                                 now + max(0, delay_frames or 0) / fmt.sample_rate - 0.09) + output
             sock.sendto(packet, self.path)
         except (OSError, ValueError, struct.error):
             # A missing or slow receiver must never interrupt playback.
