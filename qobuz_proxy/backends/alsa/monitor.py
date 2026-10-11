@@ -64,7 +64,8 @@ class PcmMonitor:
                 sample = value >> max(0, fmt.bits_per_sample - 16)
                 struct.pack_into("<h", output, i * 2, sample)
             packet = HEADER.pack(MAGIC, VERSION, 1, 16,
-                                 fmt.sample_rate // stride, count,\n                                 now + max(0, delay_frames or 0) / fmt.sample_rate - 0.09) + output
+                                 fmt.sample_rate // stride, count,
+                                 now + max(0, delay_frames or 0) / fmt.sample_rate - 0.09) + output
             sock.sendto(packet, self.path)
         except (OSError, ValueError, struct.error):
             # A missing or slow receiver must never interrupt playback.
