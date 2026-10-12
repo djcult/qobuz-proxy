@@ -196,18 +196,28 @@ Press Ctrl+C to stop.
 
 ## Step 8: Install systemd Service
 
+There is a tracked service template at
+[`contrib/qobuz-proxy.service`](qobuz-proxy.service). It targets the
+recommended existing `~/src/qobuz-proxy` source checkout and its `.venv`,
+rather than the older `/opt/qobuz-proxy` installation described above.
+See [README: Raspberry Pi ALSA + systemd service](../README.md#raspberry-pi-alsa--systemd-service)
+for the precise template-substitution and installation commands.
+
+**If you installed in `/opt` using Steps 2-5**, customise `User`,
+`WorkingDirectory` and `ExecStart` in the template to match your paths and
+virtual environment before installing it. The template contains `@USER@`
+and `@HOME@` placeholders and must not be installed unchanged.
+
+The service sets `QOBUZ_PCM_MONITOR_SOCKET=/tmp/qobuz-pcm.sock` for the
+companion Stream Deck spectrum receiver. Run both services under the same
+Linux user and do not enable `PrivateTmp=true`, otherwise the controller
+cannot receive the PCM monitoring datagrams.
+
+After installing the customised service, run:
+
 ```bash
-# Copy the service file (from the qobuz-proxy repo)
-sudo cp contrib/qobuz-proxy.service /etc/systemd/system/
-
-# Reload systemd
 sudo systemctl daemon-reload
-
-# Enable service to start on boot
-sudo systemctl enable qobuz-proxy
-
-# Start the service
-sudo systemctl start qobuz-proxy
+sudo systemctl enable --now qobuz-proxy
 ```
 
 ## Step 9: Verify Service is Running
