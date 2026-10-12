@@ -1,51 +1,21 @@
-# QobuzProxy systemd Service File
-#
-# Installation:
-#   sudo cp qobuz-proxy.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable qobuz-proxy
-#   sudo systemctl start qobuz-proxy
-#
-# View logs:
-#   journalctl -u qobuz-proxy -f
-
+# Raspberry Pi system service template (see README.md).
+# Replace @USER@ and @HOME@ before installing; do not run this template as-is.
 [Unit]
-Description=QobuzProxy - Headless Qobuz Player
-Documentation=https://github.com/your-repo/qobuz-proxy
-
-# Network must be fully online for mDNS and Qobuz API
-After=network-online.target
+Description=Qobuz Connect ALSA Proxy
 Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
-
-# Run as the pi user (or create dedicated user)
-User=pi
-Group=pi
-
-# Working directory
-WorkingDirectory=/opt/qobuz-proxy
-
-# Virtual environment activation and execution
-ExecStart=/opt/qobuz-proxy/bin/qobuz-proxy --config /etc/qobuz-proxy/config.yaml
-
-# Restart configuration
-Restart=always
-RestartSec=10
-
-# Stop timeout - give time for graceful shutdown
+User=@USER@
+WorkingDirectory=@HOME@/src/qobuz-proxy
+Environment=PYTHONUNBUFFERED=1
+# Shared with qobuz-pi-control; don't enable PrivateTmp=true here.
+Environment=QOBUZ_PCM_MONITOR_SOCKET=/tmp/qobuz-pcm.sock
+ExecStart=@HOME@/src/qobuz-proxy/.venv/bin/qobuz-proxy --config @HOME@/src/qobuz-proxy/config.yaml
+Restart=on-failure
+RestartSec=5
 TimeoutStopSec=30
-
-# Environment (optional, can also use config file)
-# Environment="QOBUZPROXY_LOG_LEVEL=info"
-
-# Security hardening (optional)
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-ReadWritePaths=/opt/qobuz-proxy
 
 [Install]
 WantedBy=multi-user.target
