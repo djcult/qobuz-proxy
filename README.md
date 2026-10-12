@@ -88,6 +88,85 @@ Open **http://localhost:8689**, authenticate, and add speakers from the UI. Spea
 
 To use a pre-existing config file: `qobuz-proxy --config /path/to/config.yaml`
 
+### Raspberry Pi ALSA + systemd service
+
+For the direct integer-PCM ALSA output used with an Audiolab USB DAC, configure
+`backend.type: alsa` and an explicit `hw:CARD,0` device in `config.yaml`.
+See [the Raspberry Pi installation guide](contrib/RASPBERRY-PI-INSTALL.md)
+for ALSA device selection and system dependencies (`flac`, `libasound2`,
+`alsa-utils`). The service below runs from an existing source checkout in
+`~/src/qobuz-proxy` with its own `.venv` and existing `config.yaml`.
+
+The tracked [service template](contrib/qobuz-proxy.service) starts the
+proxy at boot as your normal Linux user and configures the **optional
+PCM spectrum tap**:
+
+```ini
+Environment=QOBUZ_PCM_MONITOR_SOCKET=/tmp/qobuz-pcm.sock
+```
+
+This is set **on the proxy**, not on the controller. The ALSA backend still
+writes its unmodified integer PCM to the DAC; the monitoring feed is a separate
+best-effort, nonblocking Unix datagram stream. The
+[`qobuz-pi-control`](https://github.com/djcult/qobuz-pi-control) service
+binds the receiver socket at this path. The receiver sets its permissions to
+`0600`, so run both services as the **same Linux user**.
+
+#### Install the unit
+
+```bash
+cd ~/src/qobuz-proxy
+git switch alsa-dev
+git pull --ff-only
+uv sync --no-dev
+test -f config.yaml
+
+# Install and customise the tracked service template.
+sed -e "s|@USER@|$(id -un)|g" \
+    -e "s|@HOME@|$HOME|g" \
+    contrib/qobuz-proxy.service |
+    sudo tee /etc/systemd/system/qobuz-proxy.service >/dev/null
+
+sudo systemctl daemon-reload
+sudo systemd-analyze verify /etc/systemd/system/qobuz-proxy.service
+sudo systemctl enable --now qobuz-proxy.service
+systemctl status qobuz-proxy.service
+```
+
+The example assumes your existing Python environment and authentication cache
+have already been configured successfully for manual playback. Do **not**
+start a second copy of the proxy manually: the ALSA hardware device is
+exclusive. Confirm that the service user has ALSA device permissions
+(e.g. appropriate `audio` group access). To keep Qobuz credentials and
+tokens private, restrict access to your configuration and cache files.
+
+#### Service ordering and monitoring
+
+The controller's tracked systemd unit has both
+`After=qobuz-proxy.service` and a readiness check on
+`http://127.0.0.1:8689/api/speakers`, with retries. **Ordering is not
+readiness**: systemd can consider the proxy started before the HTTP listener
+becomes available. The controller's readiness check prevents the boot race.
+
+**Do not use `PrivateTmp=true`** with these example units. Separate private
+`/tmp` mounts would stop the proxy and controller seeing the same
+`/tmp/qobuz-pcm.sock`. If using different Linux service users, a different
+socket permissions strategy is necessary.
+
+The monitor is disabled by default when the environment variable is unset;
+to disable it, remove the `Environment=QOBUZ_PCM_MONITOR_SOCKET=...` directive
+and restart the proxy.
+
+```bash
+sudo systemctl restart qobuz-proxy
+journalctl -u qobuz-proxy -f
+systemctl show qobuz-proxy -p Environment
+journalctl -u qobuz-proxy -u qobuz-pi-control -f
+```
+
+After a code update (`git pull` and any needed `uv sync --no-dev`), restart
+the service for the new code to take effect.
+
 ### Authentication
 
 QobuzProxy authenticates via Qobuz's OAuth flow — just click a button and log in:
