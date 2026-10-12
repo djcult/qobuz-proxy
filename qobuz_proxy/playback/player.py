@@ -111,6 +111,7 @@ class QobuzPlayer:
 
         # State
         self._state: PlaybackState = PlaybackState.STOPPED
+        self._reconnect_snapshot_deadline = 0.0
 
         # Consecutive STOPPED polls seen while paused (external-stop detection).
         self._paused_stop_polls = 0
@@ -743,7 +744,9 @@ class QobuzPlayer:
                             )
 
             # Position, then play/pause/stop — same order as the app expects.
-            if position_ms is not None and not stale:
+            # A PAUSED message may carry a placeholder 0ms. Never seek when
+            # pausing an already playing track.
+            if position_ms is not None and not stale and not (playing_state == 3 and self._state == PlaybackState.PLAYING):
                 await self.seek(position_ms)
 
             if playing_state is not None and not stale:
@@ -757,6 +760,10 @@ class QobuzPlayer:
                     await self._pause_locked()
                 elif playing_state == 1:
                     await self._stop_playback_locked()
+
+    def note_websocket_reconnected(self) -> None:
+        """Allow one stale PAUSED snapshot within three seconds of reconnect."""
+        self._reconnect_snapshot_deadline = time.monotonic() + 3.0
 
     def _is_stale_pause_snapshot_locked(
         self,
@@ -779,6 +786,8 @@ class QobuzPlayer:
             return False
         if self._state != PlaybackState.PLAYING:
             return False
+        if time.monotonic() > self._reconnect_snapshot_deadline:
+            return False
         if position_ms is None:
             return False
         # A different target track is a real command (track change), not a replay.
@@ -791,6 +800,7 @@ class QobuzPlayer:
         if gap_ms <= _STALE_SNAPSHOT_THRESHOLD_MS:
             return False
 
+        self._reconnect_snapshot_deadline = 0.0  # One-shot reconnect replay guard
         logger.info(
             "Ignoring stale SET_STATE: server says PAUSED at %dms, renderer is "
             "PLAYING at %dms (%.1fs ahead) on same track — likely a session-"
