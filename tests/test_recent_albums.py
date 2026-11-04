@@ -25,7 +25,14 @@ async def test_album_paging_preserves_order_and_filters_unstreamable():
         ]
     )
     assert await api.get_album_track_ids("abc") == [1, 3]
-    assert api._request_signed.call_args.kwargs["params"]["offset"] == 2
+    assert api._request_signed.call_args.kwargs["params"] == {
+        "album_id": "abc",
+        "app_id": "app",
+        "limit": 100,
+        "offset": 2,
+    }
+    # album/get includes tracks by default; extra=tracks is rejected by Qobuz.
+    assert all("extra" not in call.kwargs["params"] for call in api._request_signed.call_args_list)
 
 
 def test_album_load_wire_contains_packed_track_ids():
