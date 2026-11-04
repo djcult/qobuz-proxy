@@ -134,10 +134,13 @@ class Speaker:
                 "title": meta.get("title", ""),
                 "artist": meta.get("artist", ""),
                 "album": meta.get("album", ""),
+                "album_id": meta.get("album_id", ""),
+                "track_id": track.track_id,
                 "album_art_url": meta.get("artwork_url", ""),
                 "quality": meta.get("quality_name", ""),
                 "duration_seconds": self._player.duration_ms / 1000,
-                "position_seconds": min(self._player.current_position_ms, self._player.duration_ms) / 1000,
+                "position_seconds": min(self._player.current_position_ms, self._player.duration_ms)
+                / 1000,
             }
             # In fixed-volume mode the proxy never touches or tracks the
             # renderer's level, so the cached value is not meaningful — omit it.
@@ -176,6 +179,14 @@ class Speaker:
             "now_playing": now_playing,
         }
 
+    async def play_album(self, album_id: str) -> bool:
+        """Replace the cloud queue and let Connect command normal playback."""
+        if not self._ws_manager or not self._ws_manager.is_renderer_active:
+            return False
+        tracks = await self._api_client.get_album_track_ids(album_id)
+        version = await self._queue.get_version()
+        return await self._ws_manager.load_album(tracks, version.major, version.minor)
+
     async def play(self) -> bool:
         """Resume the current Qobuz playback item."""
         if not self._player:
@@ -206,9 +217,7 @@ class Speaker:
         """Ask Qobuz Connect to navigate its authoritative queue backwards."""
         if not self._ws_manager:
             return False
-        return await self._ws_manager.request_previous_track(
-            lambda: self._is_running
-        )
+        return await self._ws_manager.request_previous_track(lambda: self._is_running)
 
     def _build_component_config(self) -> Config:
         """

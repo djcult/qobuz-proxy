@@ -75,18 +75,18 @@ message CtrlSrvrClearQueue {
   optional QueueVersion queueVersion = 1;
 }
 
+// Official web player 8.3.0-b029: field 3 is packed track IDs, not sessionUuid.
 message CtrlSrvrQueueLoadTracks {
-  optional QueueVersion  queueVersion            = 1;
-  optional bytes         actionUuid              = 2;
-  optional bytes         sessionUuid             = 3; // 16b
-  optional uint32        queuePosition           = 4;
-  optional fixed32       qobuzReferenceUuid      = 5;
-  optional int32         shufflePivotQueueItemId = 6;
-  optional bool          shuffleMode             = 7;
-  optional bytes         contextUuid             = 8;
-  optional bool          autoplayReset           = 9;
-  optional bool          autoplayLoading         = 10;
-  optional bytes         queueHash               = 100;
+  optional QueueVersion queueVersion = 1;
+  optional bytes actionUuid = 2;
+  repeated fixed32 trackIds = 3 [packed = true];
+  optional uint32 queuePosition = 4;
+  optional fixed32 shuffleSeed = 5;
+  optional int32 shufflePivotIndex = 6;
+  optional bool shuffleMode = 7;
+  optional bytes contextUuid = 8;
+  optional bool autoplayReset = 9;
+  optional bool autoplayLoading = 10;
 }
 
 message SrvrCtrlQueueLoadTracks {

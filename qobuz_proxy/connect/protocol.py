@@ -348,6 +348,40 @@ class ProtocolCodec:
 
         return self.encode_payload(batch.SerializeToString())
 
+    def encode_album_queue(
+        self, track_ids: list[int], major: int, minor: int, action_uuid: bytes, context_uuid: bytes
+    ) -> bytes:
+        """Use the official controller queue-load message (web player 8.3)."""
+        message = payload_pb2.QConnectMessage(messageType=66)
+        load = message.ctrlSrvrQueueLoadTracks
+        load.queueVersion.major = major
+        load.queueVersion.minor = minor
+        load.actionUuid = action_uuid
+        load.trackIds.extend(track_ids)
+        load.queuePosition = 0
+        load.shuffleMode = False
+        load.contextUuid = context_uuid
+        load.autoplayReset = True
+        batch = payload_pb2.QConnectBatch(
+            messagesTime=self._now_ms(), messagesId=self._next_batch_id()
+        )
+        batch.messages.append(message)
+        return self.encode_payload(batch.SerializeToString())
+
+    def encode_play_queue_item(self, item_id: int, major: int, minor: int) -> bytes:
+        message = payload_pb2.QConnectMessage(messageType=62)
+        state = message.ctrlSrvrSetPlayerState
+        state.playingState = 2
+        state.currentPosition = 0
+        state.currentQueueItem.queueVersion.major = major
+        state.currentQueueItem.queueVersion.minor = minor
+        state.currentQueueItem.id = item_id
+        batch = payload_pb2.QConnectBatch(
+            messagesTime=self._now_ms(), messagesId=self._next_batch_id()
+        )
+        batch.messages.append(message)
+        return self.encode_payload(batch.SerializeToString())
+
     def encode_previous_track(self) -> bytes:
         """Request the server's previous queue item using renderer action PREVIOUS=1."""
         message = payload_pb2.QConnectMessage()

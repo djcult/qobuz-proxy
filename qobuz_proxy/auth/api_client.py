@@ -399,6 +399,35 @@ class QobuzAPIClient:
         dt = datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
+    async def get_album_track_ids(self, album_id: str) -> list[int]:
+        """Fetch all album tracks in catalogue order, including multi-disc albums."""
+        tracks: list[int] = []
+        offset = 0
+        while True:
+            data = await self._request_signed(
+                "album",
+                "get",
+                params={
+                    "album_id": album_id,
+                    "extra": "tracks",
+                    "limit": 100,
+                    "offset": offset,
+                },
+            )
+            if not data:
+                raise ValueError("Album could not be loaded")
+            page = data.get("tracks") or {}
+            items = page.get("items") or []
+            tracks.extend(int(item["id"]) for item in items if item.get("streamable", True))
+            offset += len(items)
+            if not items or offset >= int(page.get("total", offset)):
+                break
+            if offset > 10000:
+                raise ValueError("Album contains too many tracks")
+        if not tracks:
+            raise ValueError("Album has no streamable tracks")
+        return tracks
+
     async def get_track_metadata(self, track_id: str) -> Optional[dict[str, Any]]:
         """
         Get track metadata.
@@ -432,6 +461,7 @@ class QobuzAPIClient:
             album = response.get("album")
             if album and isinstance(album, dict):
                 metadata["album"] = album.get("title", "")
+                metadata["album_id"] = str(album.get("id") or "")
                 image = album.get("image")
                 if image and isinstance(image, dict):
                     metadata["album_art_url"] = image.get("large") or image.get("small") or ""

@@ -565,6 +565,12 @@ class QobuzProxy:
 
         self._save_config()
 
+    async def _on_play_album(self, speaker_id: str, album_id: str) -> bool:
+        speaker = next((s for s in self._speakers if slugify_name(s.name) == speaker_id), None)
+        if speaker is None:
+            raise KeyError(speaker_id)
+        return await speaker.play_album(album_id)
+
     async def _on_control_speaker(self, speaker_id: str, action: str) -> dict:
         """Apply a semantic playback action to a running speaker."""
         speaker = next(
@@ -644,6 +650,7 @@ class QobuzProxy:
         self._web_app["on_edit_speaker"] = self._on_edit_speaker
         self._web_app["on_remove_speaker"] = self._on_remove_speaker
         self._web_app["on_control_speaker"] = self._on_control_speaker
+        self._web_app["on_play_album"] = self._on_play_album
         self._web_app["local_audio_enabled"] = os.environ.get(
             "QOBUZPROXY_LOCAL_AUDIO_UI", ""
         ).lower() in ("true", "1", "yes")

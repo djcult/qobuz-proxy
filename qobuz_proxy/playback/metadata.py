@@ -43,6 +43,7 @@ class TrackMetadata:
     title: str = ""
     artist: str = ""
     album: str = ""
+    album_id: str = ""
     duration_ms: int = 0
     artwork_url: str = ""
 
@@ -61,6 +62,7 @@ class TrackMetadata:
             "title": self.title,
             "artist": self.artist,
             "album": self.album,
+            "album_id": self.album_id,
             "duration_ms": self.duration_ms,
             "artwork_url": self.artwork_url,
             "quality": self.actual_quality,
@@ -307,6 +309,7 @@ class MetadataService:
                 title=data.get("title", "Unknown"),
                 artist=data.get("artist", "Unknown"),
                 album=data.get("album", "Unknown"),
+                album_id=str(data.get("album_id") or ""),
                 duration_ms=data.get("duration_ms", 0),
                 artwork_url=data.get("album_art_url", ""),
             )

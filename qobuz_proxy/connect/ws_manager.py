@@ -102,6 +102,8 @@ class WsManager:
 
         # Serializes encode+send so msgIds hit the wire in increasing order
         self._send_lock = asyncio.Lock()
+        self._album_lock = asyncio.Lock()
+        self._album_pending: Optional[tuple[bytes, asyncio.Future[Any]]] = None
         self._last_activity_time = time.monotonic()
         self._refresh_deferred = False
 
@@ -354,6 +356,48 @@ class WsManager:
             True if sent successfully
         """
         return await self._encode_and_send(lambda: self._codec.encode_volume_changed(volume))
+
+    async def load_album(self, tracks: list[int], major: int, minor: int) -> bool:
+        """Load the cloud queue, then request play using its assigned item ID.
+
+        No local playback is started if the server rejects or ignores the load.
+        The controller-capability path still requires validation against a live session.
+        """
+        async with self._album_lock:
+            if not self.is_renderer_active:
+                return False
+            generation = self._ownership_generation
+
+            def allowed():
+                return self.is_renderer_active and generation == self._ownership_generation
+
+            action = uuid.uuid4().bytes
+            future = asyncio.get_running_loop().create_future()
+            self._album_pending = (action, future)
+            try:
+                sent = await self._encode_and_send(
+                    lambda: self._codec.encode_album_queue(
+                        tracks, major, minor, action, uuid.uuid4().bytes
+                    ),
+                    allowed=allowed,
+                )
+                if not sent:
+                    return False
+                loaded = await asyncio.wait_for(future, 8)
+                if not loaded.tracks:
+                    raise RuntimeError("Qobuz returned an empty album queue")
+                return await self._encode_and_send(
+                    lambda: self._codec.encode_play_queue_item(
+                        loaded.tracks[0].queueItemId,
+                        loaded.queueVersion.major,
+                        loaded.queueVersion.minor,
+                    ),
+                    allowed=allowed,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("Timed out waiting for album queue acknowledgement") from exc
+            finally:
+                self._album_pending = None
 
     async def request_previous_track(self, still_needed: Callable[[], bool]) -> bool:
         """Navigate the server queue backwards while the playback intent remains valid."""
@@ -697,6 +741,11 @@ class WsManager:
                 logger.info(
                     "[%s] Renderer set active: %s", self.config.device.name, self._renderer_active
                 )
+            if msg_type == 91 and self._album_pending:
+                action, future = self._album_pending
+                loaded = msg.srvrCtrlQueueTracksLoaded
+                if loaded.actionUuid == action and not future.done():
+                    future.set_result(loaded)
             handler = self._handlers.get(msg_type)
             if handler:
                 self._last_activity_time = time.monotonic()

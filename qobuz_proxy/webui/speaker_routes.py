@@ -157,8 +157,35 @@ async def _handle_control_speaker(request: web.Request) -> web.Response:
     )
 
 
+async def _handle_play_album(request: web.Request) -> web.Response:
+    """Load an album, requiring acknowledgement from the authoritative queue."""
+    import re
+
+    album_id = request.match_info["album_id"]
+    if not re.fullmatch(r"[A-Za-z0-9]{1,64}", album_id):
+        return web.json_response({"error": "invalid album ID"}, status=400)
+    speaker_id = request.match_info["speaker_id"]
+    speakers = request.app["get_speakers"]()
+    speaker = next((s for s in speakers if s["id"] == speaker_id), None)
+    if speaker is None:
+        return web.json_response({"error": "speaker not found"}, status=404)
+    if speaker["status"] in {"disconnected", "starting"}:
+        return web.json_response({"error": "speaker not running"}, status=409)
+    try:
+        accepted = await asyncio.wait_for(request.app["on_play_album"](speaker_id, album_id), 25)
+    except (asyncio.TimeoutError, RuntimeError) as exc:
+        logger.warning("Album launch failed: %s", exc)
+        return web.json_response({"error": "Qobuz did not acknowledge album launch"}, status=502)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=422)
+    if not accepted:
+        return web.json_response({"error": "select this speaker in Qobuz first"}, status=409)
+    return web.json_response({"accepted": True, "album_id": album_id})
+
+
 def register_speaker_routes(app: web.Application) -> None:
     """Register speaker management routes."""
+    app.router.add_post("/api/speakers/{speaker_id}/albums/{album_id}/play", _handle_play_album)
     app.router.add_post("/api/discover/dlna", _handle_discover_dlna)
     app.router.add_get("/api/discover/audio-devices", _handle_discover_audio_devices)
     app.router.add_get("/api/speakers", _handle_get_speakers)

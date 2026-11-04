@@ -287,3 +287,21 @@ This project was built almost entirely through agentic programming using [Claude
 ## License
 
 [MIT](LICENSE)
+
+### Recent album launcher API
+
+Speaker status now includes `now_playing.album_id` and `track_id`, allowing
+controllers to retain a recent-album history without guessing IDs from titles.
+
+`POST /api/speakers/{speaker_id}/albums/{album_id}/play` retrieves the album's
+streamable tracks in catalogue order, loads them into the Qobuz cloud queue, and
+requests playback of the first server-assigned queue item. Select this speaker
+in Qobuz Connect first. An inactive speaker returns HTTP 409; missing cloud
+acknowledgement returns HTTP 502. This preserves the normal Connect playback
+path, including Next/Previous, instead of creating a separate local queue.
+
+The controller-message path follows the official web player 8.3.0-b029 and has
+mocked protocol/acknowledgement tests. **Live album launch remains experimental**:
+it needs testing against a real Qobuz session, including whether the renderer's
+connection is allowed to send controller commands and receives queue acknowledgements.
+No local playback fallback is attempted on failure.
