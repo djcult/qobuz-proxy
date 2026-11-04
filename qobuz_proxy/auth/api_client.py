@@ -409,7 +409,7 @@ class QobuzAPIClient:
                 "get",
                 params={
                     "album_id": album_id,
-                    "extra": "tracks",
+                    "app_id": self.app_id,
                     "limit": 100,
                     "offset": offset,
                 },
